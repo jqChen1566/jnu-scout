@@ -28,8 +28,9 @@ executable (`ORCA_BIN`).
   validation set is all C6H10" failure mode).  Standard library only.
 - **`validate_finetune.py`** -- evaluates a fine-tuned model against the
   foundation model and the ORCA reference on held-out reactions, and prints
-  the barrier MAE and bias decomposition.  `--baseline` (the fine-tuned
-  model) is required.
+  the barrier MAE and bias decomposition.  `--baseline` (the MACE
+  foundation-model checkpoint) is required; `--finetuned` defaults to
+  `models/mace_al_da.model`.
 - **`analyze_committee.py`** -- compares committee member combinations on a
   barrier JSON produced by the evaluation scripts; reports single-member
   MAE/bias/slope and combination statistics.
