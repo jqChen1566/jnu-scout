@@ -59,9 +59,18 @@ def spearman_rho(uq, err) -> float:
     error"; the roadmap requires rho > 0.6).
 
     Implemented as the Pearson correlation of ranks (no scipy dependency).
+
+    Raises
+    ------
+    ValueError
+        If ``uq`` and ``err`` do not have the same shape (same contract as
+        :func:`calibrate_threshold`); without this check a length mismatch
+        either raises an opaque broadcasting error or silently returns nan.
     """
     uq = np.asarray(uq, dtype=float)
     err = np.asarray(err, dtype=float)
+    if uq.shape != err.shape:
+        raise ValueError(f"shape mismatch: uq {uq.shape} vs err {err.shape}")
     if uq.size < 3:
         return float("nan")
 

@@ -21,10 +21,13 @@ The force disagreement takes a max rather than a mean because failures along an
 AFIR path often appear as a wrong force direction on a single atom; averaging
 would dilute them with the remaining well-behaved atoms.
 """
+import logging
 import os
 from typing import Dict, List, Optional
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def _default_members():
@@ -160,6 +163,12 @@ class NNPCommittee:
         calibration it degenerates to the raw absolute-energy disagreement, which
         has no physical meaning (the models use different energy references) and is
         meant for diagnostics only.
+
+        Degenerate inputs are reported via ``logging`` warnings, not errors:
+        prediction keys that do not match the committee members, an
+        ``energy_family`` without available members, and members missing from
+        ``energy_baselines`` all leave the computed values unchanged but emit a
+        warning.
         """
         names = list(predictions)
         if len(names) < 2:
@@ -178,15 +187,49 @@ class NNPCommittee:
         # total energies (H2O -2078.9 eV, close to -2078.4 eV from ORCA wB97M-V);
         # subtracting across families is not physically meaningful.  By default the
         # largest backend family is used (mace: MP-0 + MPA-0).
+        # The family filter below is keyed by member name: prediction keys that
+        # do not match ``self.members`` silently degrade it.  Warn, but keep the
+        # deliberately tolerant fallback behaviour unchanged.
+        member_names = [n for n, _, _ in self.members]
+        missing = [n for n in member_names if n not in predictions]
+        unknown = [n for n in names if n not in set(member_names)]
+        if missing or unknown:
+            logger.warning(
+                "committee disagreement: prediction keys do not match the committee "
+                "members (members without predictions: %s; predictions without a member "
+                "entry: %s); the backend-family filter may silently degrade",
+                missing, unknown,
+            )
+
         fam_map: Dict[str, list] = {}
         for name, backend, _ in self.members:
             if name in predictions:
                 fam_map.setdefault(backend, []).append(name)
         if self.energy_family and self.energy_family in fam_map:
             e_names = fam_map[self.energy_family]
+        elif fam_map:
+            if self.energy_family:
+                logger.warning(
+                    "committee disagreement: energy_family %r has no members among the "
+                    "predictions (available families: %s); using the largest family "
+                    "instead", self.energy_family, sorted(fam_map),
+                )
+            e_names = max(fam_map.values(), key=len)
         else:
-            e_names = max(fam_map.values(), key=len) if fam_map else names
+            logger.warning(
+                "committee disagreement: no member matched the predictions; uq_energy "
+                "compares all %d predictions regardless of backend family, so their "
+                "energy references may be incompatible", len(names),
+            )
+            e_names = names
         e_idx = [names.index(n) for n in e_names]
+        missing_baselines = [n for n in e_names if n not in self.energy_baselines]
+        if self.energy_baselines and missing_baselines:
+            logger.warning(
+                "committee disagreement: no energy baseline for %s (energy_baselines "
+                "covers %s); their raw absolute-energy offsets leak into uq_energy",
+                missing_baselines, sorted(self.energy_baselines),
+            )
         uq_e = float(np.std(energies[e_idx]) / max(n_atoms, 1))
         # Force disagreement: for each atom take the largest deviation from the mean
         # over the members, then take the maximum over all atoms
