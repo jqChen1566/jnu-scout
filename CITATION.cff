@@ -1,13 +1,27 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
+title: "JNUScout: the machine-learning-potential scout for reaction path search"
+type: software
 authors:
   - family-names: Chen
     given-names: Jianqi
     affiliation: "College of Chemistry and Materials Science, Jinan University, Guangzhou, China"
+  - family-names: Chen
+    given-names: Mingyu
+    affiliation: "Information Hub, The Hong Kong University of Science and Technology (Guangzhou), China"
+  - family-names: Luo
+    given-names: Ruiqian
+    affiliation: "School of Chemistry, Sun Yat-sen University, Guangzhou, China"
+  - family-names: Zhang
+    given-names: Zhuoran
+    affiliation: "College of Chemistry and Materials Science, Jinan University, Guangzhou, China"
+  - family-names: Zhang
+    given-names: Laiyu
+    affiliation: "College of Chemistry and Materials Science, Jinan University, Guangzhou, China"
+contact:
   - family-names: Li
     given-names: Juan
     affiliation: "College of Chemistry and Materials Science, Jinan University, Guangzhou, China"
-title: "JNUScout: the machine-learning-potential scout for reaction path search"
 version: 0.1.0
 date-released: "2026-10-01"
 url: "https://github.com/jqChen1566/jnu-scout"

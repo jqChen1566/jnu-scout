@@ -10,8 +10,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [
-  { name = "Jianqi Chen" },
-  { name = "Juan Li" },
+  { name = "Jianqi Chen", email = "chen_jianqi1566@163.com" },
+  { name = "Mingyu Chen" },
+  { name = "Ruiqian Luo" },
+  { name = "Zhuoran Zhang" },
+  { name = "Laiyu Zhang" },
 ]
 keywords = [
   "reaction path search",

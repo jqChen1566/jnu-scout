@@ -166,8 +166,16 @@ axis; report errors by system size, not only in aggregate).
 
 ## Author
 
-JNUScout is developed by Jianqi Chen and Juan Li, College of Chemistry and
-Materials Science, Jinan University, Guangzhou, China.
+JNUScout is developed by:
+
+- Jianqi Chen, Zhuoran Zhang and Laiyu Zhang, College of Chemistry and
+  Materials Science, Jinan University, Guangzhou, China;
+- Mingyu Chen, Information Hub, The Hong Kong University of Science and
+  Technology (Guangzhou), China;
+- Ruiqian Luo, School of Chemistry, Sun Yat-sen University, Guangzhou, China.
+
+Under the supervision of Prof. Juan Li, College of Chemistry and Materials
+Science, Jinan University.
 
 ## Funding
 
@@ -181,7 +189,7 @@ If you use this software, cite it as described in `CITATION.cff`:
 
 ```bibtex
 @software{jnuscout,
-  author  = {Jianqi Chen and Juan Li},
+  author  = {Jianqi Chen and Mingyu Chen and Ruiqian Luo and Zhuoran Zhang and Laiyu Zhang},
   title   = {{JNUScout}: the machine-learning-potential scout for reaction path search},
   year    = {2026},
   version = {0.1.0},
