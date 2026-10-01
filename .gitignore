@@ -11,3 +11,16 @@ runs/
 *.gbw
 *.tmp
 *.log
+
+# LaTeX build products (manual)
+*.aux
+*.blg
+*.bbl
+*.bcf
+*.idx
+*.ilg
+*.ind
+*.toc
+*.run.xml
+docs/manual/main.pdf
+docs/manual/generated/

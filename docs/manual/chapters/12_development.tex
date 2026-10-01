@@ -1,0 +1,145 @@
+\chapter{Development and Verification}
+\label{ch:development}
+
+This chapter describes how the package is checked, what the test suite does
+and deliberately does not cover, and the rules a change has to satisfy.  It
+is written for someone modifying the package rather than using it.
+
+\section{Running the checks}
+\label{sec:dev-verify}
+
+The unified check is one command from the repository root:
+
+\begin{transcript}
+$ bash scripts/verify.sh
+== syntax gate (compileall) ==
+   OK
+== test suite ==
+........................................................................ [ 88%]
+.........                                                                [100%]
+81 passed in 0.36s
+\end{transcript}
+
+The script runs under \code{set -euo pipefail}, so any failure aborts the
+run.  Its first stage is a syntax gate: \code{python -m compileall} over
+\file{src/}, \file{scripts/} and \file{tests/}, which fails on any file the
+running interpreter cannot parse.  The second stage is the test suite,
+\code{python -m pytest -q}, which needs only the core dependencies; no ORCA,
+MongoDB, network access or model weights are required, and no external
+program is launched.
+
+\section{The test suite}
+\label{sec:dev-tests}
+
+\begin{table}[htbp]
+\centering
+\caption{Collected tests per file.  The counts are collection counts, so a
+parametrised test contributes one count per case.}
+\label{tab:tests}
+\begin{tabularx}{\textwidth}{@{}lrX@{}}
+\toprule
+File & Tests & Scope \\
+\midrule
+\file{tests/test_calibration.py} & 24 & the calibration convention and its metrics, pure NumPy \\
+\file{tests/test_committee.py} & 21 & the disagreement metrics, pure computation \\
+\file{tests/test_factory.py} & 20 & level routing of the calculator factory \\
+\file{tests/test_safe_nnp.py} & 16 & the fallback decision rule of the safe calculator \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Four design rules keep the suite fast and honest:
+
+\begin{itemize}
+  \item \textbf{no external programs.}  Constructing a calculator never runs
+        a backend: xTB and ORCA are only invoked by \code{calculate()}, and
+        the tests never call it on a real backend.  The committee tests never
+        touch a model, because the calculators are built lazily and the
+        tests stop before that point.
+  \item \textbf{expectations are derived independently.}  The calibration
+        tests compare against a hand-written reference quantile (the
+        Hyndman--Fan type-7 definition, the NumPy default) and against
+        closed-form values written out in the comments, not against numbers
+        the production code produced.
+  \item \textbf{stubs at the process boundary.}  The safe-calculator tests
+        inject a stub committee and a stub fallback, and the production ORCA
+        symbol inside the module is monkeypatched, so a regression in the
+        decision rule cannot launch a real ORCA process.
+  \item \textbf{skip, do not fail, when an optional stack is absent.}  Tests
+        that need ASE declare it with \code{pytest.importorskip} at module
+        level; a checkout without the optional extras still runs the pure
+        NumPy tests.  The root \file{conftest.py} prepends \file{src/} to
+        \code{sys.path}, so the suite works without an editable install.
+\end{itemize}
+
+\begin{refusalbox}[What the default suite does not cover]
+The suite exercises the mathematics and the decision logic; it does not
+execute ORCA, xTB, MongoDB, the SCINE engine or real model weights.  Those
+paths are covered by the utility scripts of Chapter~\ref{ch:scripts} and by
+end-to-end runs (a Puffin job reaching \code{Status.COMPLETE}, a calibrated
+threshold on a real reference set).  A green suite is a necessary condition,
+not evidence that an engine integration works.
+\end{refusalbox}
+
+\section{The Python version floor}
+\label{sec:dev-floor}
+
+The package declares \code{requires-python >= 3.11} and classifies for
+3.11 and 3.12.  The syntax gate in \code{verify.sh} is what enforces this in
+practice: it compiles every source file with the running interpreter, so a
+file that uses syntax the interpreter cannot parse fails before the tests
+start.  Run the gate with the oldest supported interpreter (3.11) to make it
+a floor check; under a newer interpreter it only reflects that interpreter's
+own grammar.  This is why the gate is a separate stage rather than a side
+effect of importing the package: a syntax error that a newer interpreter
+accepts must not reach a user on the floor version.
+
+\section{Bit-for-bit equivalence with upstream}
+\label{sec:dev-equivalence}
+
+Files that are adapted from an upstream project -- interface definitions and
+protocol implementations rather than new algorithms -- must be shown to be
+logically unchanged, so that a modification is a deliberate act rather than
+an accident of transcription.  Two complementary checks are used on the
+development side:
+
+\begin{itemize}
+  \item \textbf{AST comparison with strings masked.}  Parse both files with
+        Python's \code{ast} module, replace every string literal (docstrings
+        included) by a fixed placeholder, and compare the resulting trees
+        with \code{ast.dump}.  A difference in the trees means the logic
+        differs; identical trees mean the two files differ only in strings
+        and messages.  This is the check that distinguishes ``renamed the
+        error message'' from ``changed a comparison''.
+  \item \textbf{Normalized code diff.}  Strip comments and docstrings, drop
+        blank lines, normalize indentation and whitespace, and diff the two
+        texts.  Where the AST comparison gives a yes/no answer, the
+        normalized diff gives a readable line-level review of exactly what
+        changed.
+\end{itemize}
+
+Both checks establish source-level equivalence; neither proves numerical
+equivalence.  They are paired with the behavioural evidence -- the test
+suite, and where a number is at stake, an independent numerical path -- and
+treated as a necessary, not a sufficient, condition.
+
+\section{Contributing}
+\label{sec:dev-contributing}
+
+\begin{itemize}
+  \item \textbf{The checks must be green.}  \code{bash scripts/verify.sh}
+        has to pass before a change is proposed.  A change that cannot pass
+        the syntax gate on 3.11 is not ready, whatever it does on a newer
+        interpreter.
+  \item \textbf{Keep the module boundaries.}  \code{jnuscout.calculators}
+        holds ASE calculators and nothing engine-specific;
+        \code{jnuscout.scine} holds the bridge and the injection patches;
+        \code{jnuscout.uq} holds the pure-NumPy calibration mathematics.
+        The top-level import stays cheap: it must not pull in torch, mace or
+        scine.
+  \item \textbf{Import optional stacks late.}  Heavy or optional
+        dependencies are imported inside the function that needs them, and a
+        missing stack should raise a clear error at the point of use rather
+        than break the package import.  Tests for such code skip when the
+        stack is absent.
+\end{itemize}

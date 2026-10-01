@@ -1,0 +1,132 @@
+\chapter{Architecture}
+\label{ch:architecture}
+
+\jns{} is organised as three layers around one idea: run the expensive
+exploration with machine-learning potentials, but only trust them where
+they can be shown to be trustworthy.
+
+\begin{center}
+\begin{verbatim}
+        +----------------------------------------------------------+
+        |  credibility layer                                       |
+        |  committee disagreement (UQ)  .  fallback to ORCA L2     |
+        +----------------------------------------------------------+
+                              ^
+        +----------------------------------------------------------+
+        |  engine layer                                            |
+        |  reaction-network exploration (SCINE Chemoton)           |
+        |  job execution daemon (SCINE Puffin)                     |
+        |  NNP registered as a method family   <- this package     |
+        +----------------------------------------------------------+
+                              ^
+        +----------------------------------------------------------+
+        |  backend layer                                           |
+        |  ML potentials (MACE, AIMNet2)  .  xTB  .  ORCA          |
+        +----------------------------------------------------------+
+\end{verbatim}
+\end{center}
+
+\section{The backend layer}
+
+The backend layer provides every method in the method chain as an ASE
+calculator (Chapter \ref{ch:calculators} documents each one).  All of them
+follow the ASE \code{Calculator} protocol \cite{larsen2017ase}, so any of
+them can be used stand-alone -- ideal for testing, benchmarking or custom
+workflows -- without the engine:
+
+\begin{itemize}
+  \item \code{XTBCalculator} (L1): GFN2-xTB \cite{bannwarth2019gfn2} via the
+    \code{xtb} command line, for fast pre-screening;
+  \item \code{ORCACalculator} (L2/L3): r2SCAN-D4/def2-SVP
+    \cite{furness2020r2scan,caldeweyher2019d4} for geometry optimisation and
+    frequencies, and wB97M-V/def2-TZVP \cite{mardirossian2016wb97mv} for
+    high-level single points;
+  \item \code{NNPCommittee}: the three ML potentials plus the disagreement
+    measure;
+  \item \code{SafeNNPCalculator} (L0): the committee with the
+    threshold-triggered fallback.
+\end{itemize}
+
+\section{The engine layer}
+
+SCINE's exploration engine Chemoton \cite{unsleber2022chemoton} and its job
+daemon Puffin \cite{bensberg2025puffin} never receive calculator objects.
+They resolve a calculator from a \emph{method-family string} at a single
+choke point, which makes external potentials injectable: \jns{} intercepts
+that resolution step and returns Python calculators implementing SCINE's
+\code{Calculator} interface.  Two building blocks do the work:
+
+\begin{itemize}
+  \item the \textbf{bridge} (\code{jnuscout.scine.bridge}) implements the
+    full sixteen-method SCINE Python-calculator contract for any ASE
+    calculator;
+  \item the \textbf{injection patches} (\code{jnuscout.scine.puffin_patch},
+    \code{readuct_patch}) replace the resolution functions on
+    \code{scine_utilities.core} for the declared method families only,
+    leaving every other method family on the stock path.
+\end{itemize}
+
+Chapter \ref{ch:scine-integration} documents the contract, the deployment
+steps and the failure modes in detail.
+
+\section{The credibility layer}
+
+The committee's disagreement is the uncertainty score.  A threshold,
+calibrated once on a reference set, decides per configuration whether the
+MLP answer is used or the evaluation falls back to ORCA L2.  The mechanism
+and the calibration protocol are the subject of Chapter
+\ref{ch:uncertainty}.
+
+\section{Design decisions kept on the record}
+
+The following choices are easy to get wrong and were fixed deliberately;
+they are the reason several rules in this design look asymmetric:
+
+\begin{itemize}
+  \item \textbf{Energy disagreement is computed within one model family.}
+    Absolute energies across families are not comparable -- MACE reports
+    atomization energies, AIMNet2 reports absolute total energies -- so
+    subtracting across families is physically meaningless.  The default
+    compares the two MACE models; the AIMNet2 member participates in the
+    force disagreement and in the ensemble prediction.
+  \item \textbf{Force disagreement is a per-atom maximum, not a mean.}  In
+    reacting geometries the failure mode is typically one atom with a wrong
+    force direction; averaging over atoms would dilute exactly the signal
+    the fallback is supposed to catch.
+  \item \textbf{Clones must be fully isolated.}  Puffin derives
+    spin-shifted systems by cloning a calculator and writing new settings
+    into the clone.  A shared settings object would silently modify the
+    original; the bridge therefore copies settings and structure on
+    \code{_clone_impl}.
+  \item \textbf{The patched calculator declares a superset of properties and
+    settings.}  The engine fails the whole job when a required property was
+    not declared, so over-declaring is cheap and under-declaring is fatal.
+\end{itemize}
+
+\section{The lifecycle of one evaluation}
+
+For a single geometry inside a running exploration, the flow through the
+layers is:
+
+\begin{enumerate}
+  \item Puffin resolves the method family at its settings manager; the
+    injection patch returns the bridge (Chapter \ref{ch:scine-integration}).
+  \item The bridge converts the structure from atomic units to ASE units and
+    calls the safe calculator.
+  \item The safe calculator asks the committee: each member predicts energy
+    and forces (in eV and eV/\AA{}); the disagreement scores \code{uq_force}
+    and \code{uq_energy} are computed.
+  \item If both scores are below their thresholds, the committee mean answer
+    is returned.  Otherwise the evaluation falls back to ORCA L2 -- the
+    fallback process is constructed lazily, only when it is first needed.
+  \item The bridge converts the result back to atomic units and fills the
+    \code{Results} object the engine expects.  Fallback counts
+    (\code{n_calls}, \code{n_fallback}) accumulate for auditing.
+\end{enumerate}
+
+\begin{notebox}[Where the numbers live]
+Every report of ``how often did we fall back'' in this manual follows this
+lifecycle: it is a property of the calculator instance over the
+configurations it was asked to evaluate, not a property of the potential
+alone.
+\end{notebox}

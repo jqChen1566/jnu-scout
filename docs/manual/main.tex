@@ -1,0 +1,64 @@
+\documentclass[11pt,a4paper,oneside,numbers=noenddot,listof=totoc]{scrreprt}
+\usepackage{jnscout}
+
+\addbibresource{refs.bib}
+\makeindex
+
+\begin{document}
+
+% --- title page -------------------------------------------------------------
+\begin{titlepage}
+  \centering
+  \vspace*{2.5cm}
+  {\sffamily\Huge\bfseries JNUScout\par}
+  \vspace{0.6cm}
+  {\Large the machine-learning-potential scout for reaction path search\par}
+  \vspace{0.4cm}
+  {\large User manual\par}
+  \vspace{1.6cm}
+  {\large Version 0.1.0 \quad\textbullet\quad 2026-10-01\par}
+  \vfill
+  {\large
+  Jianqi Chen, Zhuoran Zhang, Laiyu Zhang\par
+  \small College of Chemistry and Materials Science, Jinan University, Guangzhou, China\par
+  \vspace{0.4cm}
+  \large Mingyu Chen\par
+  \small Information Hub, The Hong Kong University of Science and Technology (Guangzhou), China\par
+  \vspace{0.4cm}
+  \large Ruiqian Luo\par
+  \small School of Chemistry, Sun Yat-sen University, Guangzhou, China\par
+  \vspace{0.8cm}
+  \normalsize under the supervision of Prof.\ Juan Li (Jinan University)\par
+  }
+  \vfill
+  {\small Supported by the Jinan University Provincial College Students'\\
+  Innovation and Entrepreneurship Training Program (Project No.\ S202610559049)\par}
+  \vspace{1cm}
+\end{titlepage}
+
+\tableofcontents
+
+% --- main matter -------------------------------------------------------------
+\include{chapters/01_preface}
+\include{chapters/02_introduction}
+\include{chapters/03_installation}
+\include{chapters/04_getting_started}
+\include{chapters/05_architecture}
+\include{chapters/06_calculators}
+\include{chapters/07_scine_integration}
+\include{chapters/08_uncertainty}
+\include{chapters/09_active_learning}
+\include{chapters/10_scripts}
+\include{chapters/11_configuration}
+\include{chapters/12_development}
+
+% --- appendices --------------------------------------------------------------
+\appendix
+\include{chapters/90_appendix_constants}
+\include{chapters/91_appendix_env}
+\include{chapters/92_appendix_glossary}
+
+\printbibliography[heading=bibintoc]
+\printindex
+
+\end{document}

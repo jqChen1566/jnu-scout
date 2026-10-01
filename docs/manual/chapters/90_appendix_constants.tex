@@ -1,0 +1,48 @@
+\chapter{Constants and Units}
+\label{app:constants}
+
+All unit conversions in \jns{} live in module-level constants, so that a
+conversion shows up in exactly one place per module.  This appendix lists
+them together with the module they are defined in.
+
+\section*{Unit conversion constants}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llll}
+\toprule
+Constant & Value & Meaning & Defined in \\
+\midrule
+\code{HA2EV}             & 27.211386245988         & Hartree $\to$ eV            & \code{scine/calculator.py} \\
+\code{EV_PER_HARTREE}  & 27.211386245            & Hartree $\to$ eV (bridge)   & \code{scine/bridge.py} \\
+\code{HA2EVA}            & 27.211386245 / 0.5291772109 & Eh/bohr $\to$ eV/\AA{}  & \code{calculators/orca.py}, \code{xtb.py} \\
+\code{BOHR2ANG}          & 0.529177210903          & bohr $\to$ \AA{}            & \code{scine/calculator.py} \\
+\code{BOHR_PER_ANGSTROM} & 1.8897259886          & \AA{} $\to$ bohr            & \code{scine/bridge.py}, scripts \\
+\code{KCAL_PER_EV}     & 23.060548               & eV $\to$ kcal/mol           & scripts \\
+\code{KCAL_PER_HA}     & 627.509474              & Hartree $\to$ kcal/mol      & scripts \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{notebox}[Why two Hartree-to-eV constants]
+The bridge uses 27.211386245 and the SCINE calculator uses
+27.211386245988 for the same conversion.  The two values differ in the
+ninth significant digit; they are kept as-is because each module's value
+was validated in place, and the discrepancy is far below any physical or
+numerical tolerance that matters here.  Do not ``unify'' them without
+re-running the equivalence checks.
+\end{notebox}
+
+\section*{The atomic-unit boundary}
+
+Atomic units enter at exactly one place: the SCINE interface.  SCINE
+stores structures in Bohr and expects Hartree / (Eh/bohr) from a
+calculator, while every calculator in this package speaks ASE units (eV,
+eV/\AA{}, \AA{}).  The bridge performs both conversions; nothing else in
+the package should ever see a Hartree or a Bohr value.  The one historical
+trap worth knowing about: the search database stores coordinates in Bohr,
+so any code path that reads database geometries and feeds them to ASE
+without dividing by 1.8897 stretches every molecule by that factor (a 1.08
+\AA{} C--H bond becomes 2.05 \AA{} -- a broken-bond distance).  The utility
+script \script{verify_bohr_units} checks this conversion with a
+known-answer test.

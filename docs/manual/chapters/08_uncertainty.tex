@@ -1,0 +1,134 @@
+\chapter{Uncertainty Quantification}
+\label{ch:uncertainty}
+
+This chapter defines the uncertainty machinery of \jns{}: how the committee
+disagreement is measured, how the fallback threshold is calibrated, and how
+the calibration quality is audited.  Everything here maps one-to-one onto
+\code{jnuscout.calculators.committee} and \code{jnuscout.uq.calibration}.
+
+\section{Disagreement measures}
+
+The committee consists of ML potentials from different architecture
+families (by default MACE-MP-0, MACE-MPA-0 and AIMNet2-b973c).  For a
+geometry with $N$ atoms, let member $i$ predict forces $F_{i,j}$ on atom $j$
+and energy $E_i$.
+
+\subsection{Force disagreement}
+
+The per-atom deviation of each member from the committee mean force is
+mapped to its vector norm and maximised over all atoms and members:
+
+\begin{equation}
+  \mathrm{uq}_F
+  = \max_{i,\,j}\;
+    \left\lVert F_{i,j}
+      - \frac{1}{M}\sum_{i'} F_{i',j} \right\rVert
+  \qquad [\mathrm{eV}/\text{\AA}]
+  \label{eq:uqf}
+\end{equation}
+
+The maximum, not the mean, is deliberate: in reacting geometries the
+failure mode is typically a single atom with a wrong force direction, and a
+mean over atoms would dilute it.
+
+\subsection{Energy disagreement}
+
+The standard deviation of the members' energies, divided by the atom count
+to remove the size dependence:
+
+\begin{equation}
+  \mathrm{uq}_E = \frac{\operatorname{std}_i(E_i)}{N}
+  \qquad [\mathrm{eV}/\mathrm{atom}]
+  \label{eq:uqe}
+\end{equation}
+
+Energy disagreement is computed \emph{within one backend family} (by
+default the largest family, the two MACE models).  Cross-family absolute
+energies are not comparable -- MACE reports atomization energies, AIMNet2
+reports absolute total energies -- so an optional per-member, per-atom
+baseline offset (\code{energy_baselines}) can be supplied to align members
+before a cross-family spread is even defined.  Without baselines, the raw
+absolute-energy spread is diagnostics-only.  Degenerate inputs (keys that do
+not match the members, a family filter without members, missing baselines)
+emit \code{logging} warnings rather than errors: the numeric behaviour of
+the tolerant fallback path is preserved, but silence is not.
+
+\section{Threshold calibration}
+
+A threshold $\theta$ converts the disagreement score into a decision.  The
+calibration protocol implemented by \code{calibrate_threshold} is:
+
+\begin{equation}
+  \theta = \operatorname{Quantile}\!\left(\,
+      \mathrm{uq} \;\middle|\; \mathrm{err} > \varepsilon_{\mathrm{crit}},
+      \; 5\% \,\right)
+  \label{eq:theta}
+\end{equation}
+
+\emph{Take the low quantile of the uncertainty score among the dangerous
+configurations} -- those whose true error (against the reference
+calculations) exceeds the tolerance $\varepsilon_{\mathrm{crit}}$.  Only
+five percent of dangerous configurations sit below $\theta$, so the
+false-negative rate of the fallback trigger is bounded by construction.
+
+\begin{notebox}[Why not the 95th percentile of uq?]
+A threshold taken from the score's own distribution describes the high tail
+of the score -- which may fall between two modes of the score distribution
+and catch dangerous configurations arbitrarily.  The conditional quantile in
+Equation~\ref{eq:theta} asks the right question: \emph{among configurations
+that are actually bad, how low can the score be?}
+\end{notebox}
+
+If the dangerous set is empty (no reference error exceeds
+$\varepsilon_{\mathrm{crit}}$), the function returns \code{inf}, meaning
+``never fall back'' -- the caller is expected to treat this as a signal that
+the reference set was too easy, not as a validation of the potential.
+
+\section{Coverage is a consequence, not a constant}
+
+The fallback rate is not a fixed performance number of the method: it
+follows from the accuracy requirement.  A stricter
+$\varepsilon_{\mathrm{crit}}$ (more configurations labelled dangerous) forces
+a lower $\theta$ and a higher fallback rate.  Quote the pair
+$(\varepsilon_{\mathrm{crit}}, \text{fallback rate})$ together, never the
+rate alone.
+
+\section{Calibration API}
+
+\begin{description}
+  \item[\code{calibrate_threshold(uq, err, epsilon_crit, quantile=0.05)}]
+    Returns $\theta$ per Equation~\ref{eq:theta}; raises \code{ValueError}
+    on shape mismatch; returns \code{inf} for an empty dangerous set.
+  \item[\code{spearman_rho(uq, err)}]
+    Rank correlation between the score and the true error.  A usable
+    committee should reach $\rho$ well above $0.6$; the value is reported,
+    not thresholded, by the library.
+  \item[\code{expected_calibration_error(uq, err, epsilon_crit, n_bins=10)}]
+    Expected calibration error of the threshold decision over binned scores.
+  \item[\code{coverage_stats(uq, err, theta, epsilon_crit)}]
+    For a chosen threshold: number of configurations, fallback rate,
+    number of dangerous configurations, false-negative rate, and the mean
+    absolute error of the kept (non-fallback) predictions versus the full
+    set.
+\end{description}
+
+\section{Measured record}
+
+On the development systems of this project (C/H/N/O chemistry, ORCA L2 as
+the reference), the committee disagreement reached a rank correlation of
+$\rho = 0.847$ against true force errors at calibration, and the fallback
+trigger fired preferentially in transition-state regions, where the
+disagreement rose by several times over equilibrium values.  These numbers
+characterise the protocol on the tested systems; they are not transferable
+accuracy guarantees for other chemistries.
+
+\begin{readbox}[Auditing a calibrated threshold]
+A threshold is only as good as its calibration set.  Before trusting
+$\theta$, check (i) that the reference set covers the force regimes the
+exploration will visit (equilibrium \emph{and} stretched geometries),
+(ii) the rank correlation $\rho$ of the score against the true error, and
+(iii) the coverage statistics at the chosen
+$\varepsilon_{\mathrm{crit}}$.  The utility script
+\script{calibrate_uq} performs all three on a reference set it builds from
+small molecules plus random displacements.
+\end{readbox}

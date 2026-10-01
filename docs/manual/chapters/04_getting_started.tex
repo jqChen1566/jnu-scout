@@ -1,0 +1,168 @@
+\chapter{Getting Started}
+\label{ch:getting-started}
+
+There are three ways to use \jns{}, in increasing order of commitment:
+calibrating the uncertainty threshold (no external program), evaluating
+structures with the safe calculator (needs the models, falls back to ORCA
+only when triggered), and running the models inside the SCINE engine (needs
+the full stack).  Each path below is self-contained.
+
+\section{Path 1: calibrating an uncertainty threshold}
+
+The threshold that decides when the machine-learning potential is trusted is
+a measured quantity, not a default.  Calibrating it needs two arrays
+collected on a reference set: the committee disagreement \code{uq} of each
+configuration, and the true error \code{err} of that configuration against a
+reference calculation (for the force criterion, the per-atom force error in
+eV/\AA).  The calibration itself is pure \file{numpy} and runs without any
+external program:
+
+\begin{codeblock}
+import numpy as np
+from jnuscout.uq.calibration import calibrate_threshold, coverage_stats, spearman_rho
+
+uq  = np.array([0.02, 0.05, 0.11, 0.30, 0.08, 0.45, 0.15, 0.60])
+err = np.array([0.01, 0.03, 0.09, 0.40, 0.02, 0.55, 0.12, 0.70])  # eV/A
+
+theta = calibrate_threshold(uq, err, epsilon_crit=0.1)
+print(theta)                             # 0.1725 with these numbers
+print(spearman_rho(uq, err))             # 0.98 (rank correlation, want > 0.6)
+print(coverage_stats(uq, err, theta, epsilon_crit=0.1))
+\end{codeblock}
+
+With these numbers the script prints:
+
+\begin{transcript}
+0.1725
+0.9761904761904762
+{'n': 8, 'coverage': 0.625, 'fallback_rate': 0.375, 'n_dangerous': 4,
+ 'false_negative_rate': 0.25, 'nn_mae': 0.054000000000000006,
+ 'all_mae': 0.24000000000000002, 'theta': 0.1725}
+\end{transcript}
+
+\begin{readbox}[Reading the calibration output]
+\code{theta} is the fallback threshold: a configuration whose disagreement
+reaches it is handed to the reference method.  \code{spearman_rho} measures
+whether the disagreement ranks configurations the way the true error does; a
+committee worth using reaches well above 0.6.  \code{coverage_stats}
+reports the share of configurations carried by the potential, the
+complementary fallback rate, and the false-negative rate (dangerous
+configurations that stayed below the threshold).  The example set is tiny ---
+four dangerous configurations, one of them below \code{theta} --- so the
+empirical rate is coarse here; the 5\,\% quantile construction is what bounds
+it on a realistic reference set.  Chapter~8 gives the full protocol.
+\end{readbox}
+
+Two behaviours to keep in mind when wiring this into a script: thresholds
+come in pairs with the accuracy target, so a stricter \code{epsilon_crit}
+produces a lower \code{theta} and a higher fallback rate; and if the
+reference set contains no dangerous configuration at all,
+\code{calibrate_threshold} returns \code{inf} (never fall back), which the
+caller should treat as an alarm rather than a result.
+
+\section{Path 2: evaluating structures with the safe calculator}
+
+This path needs the \code{[nnp]} extra.  ORCA is needed only if a fallback
+is actually triggered:
+
+\begin{codeblock}
+from ase.io import read
+from jnuscout.calculators import SafeNNPCalculator
+
+atoms = read("molecule.xyz")
+calc = SafeNNPCalculator(theta_force=0.30)        # theta from path 1
+atoms.calc = calc
+print(atoms.get_potential_energy(), atoms.get_forces())
+print(calc.n_fallback, "/", calc.n_calls)
+\end{codeblock}
+
+Every call runs the committee once, forms the ensemble mean, and compares the
+disagreement with the threshold.  Below the threshold the ensemble result is
+returned; at or above it the structure is re-evaluated with ORCA L2 and that
+result is returned instead.  The last line prints the number of fallbacks
+over the total number of calculations, for example \code{0 / 1} for a single
+well-behaved structure.  The ORCA fallback object is built lazily, so no ORCA
+process exists unless a fallback happens.
+
+\begin{notebox}[First run]
+The default committee is MACE-MP-0, MACE-MPA-0 and AIMNet2-b973c, evaluated
+on \code{device="cuda"}; pass \code{device="cpu"} on a machine without a GPU.
+The first call loads the model weights, so it is much slower than the rest; on
+an offline machine set \code{MACE_MP0_PATH} and \code{MACE_MPA0_PATH}
+first (Chapter~\ref{ch:installation}).
+\end{notebox}
+
+\begin{notebox}[Caching]
+Results follow the ASE calculator protocol: energy and forces of one
+evaluation are cached together, and repeated requests on an unchanged
+\code{Atoms} object reuse them without a new evaluation.  The counters
+therefore count evaluations, not property accesses.
+\end{notebox}
+
+\section{Path 3: driving the SCINE engine}
+
+To let the engine run the potential as a method family, the injection patch
+must be active in every process of the job daemon before Puffin starts.  The
+supported route is a \file{sitecustomize.py} on \code{PYTHONPATH}:
+
+\begin{codeblock}
+# sitecustomize.py, on PYTHONPATH
+from jnuscout.scine import install_from_env
+install_from_env()
+\end{codeblock}
+
+With \code{NNP_AFIR_PUFFIN=1} in the environment, the patch intercepts
+calculator resolution for the declared method families and leaves every other
+method family untouched, so DFTB3 and friends keep working; without the
+variable the call is a no-op.  Start your Chemoton exploration as usual.  The
+choke points, the environment variables and the bridge contract are the
+subject of Chapter~7.
+
+\section{A complete workflow}
+
+The three paths compose into one loop.  A typical cycle:
+
+\begin{enumerate}
+  \item \emph{Pre-screen cheaply.}  L1 (GFN2-xTB) refines initial
+  geometries and screens candidate structures at negligible cost.
+  \item \emph{Explore with the potential.}  Chemoton drives the reaction
+  network search while the committee evaluates structures; every geometry
+  receives a disagreement score alongside its energy and forces.
+  \item \emph{Route by uncertainty.}  Configurations whose disagreement
+  reaches the calibrated threshold are re-evaluated at L2 (ORCA
+  r2SCAN-D4/def2-SVP); their NNP answer is discarded.  Everything else stays
+  on the fast path.
+  \item \emph{Close the active-learning round.}  Sample frames along the
+  explored paths, label them at L2, split by composition and group by
+  reaction, fine-tune the potential, and verify on held-out reactions.
+  \item \emph{Repeat.}  The next round starts from the fine-tuned potential,
+  so the fallback rate at a fixed accuracy target falls as the potential
+  learns the chemistry it is being asked about.
+\end{enumerate}
+
+Points that determine whether this loop helps or misleads: the training
+composition sets the generality of the fine-tuned model (a single-composition
+training set produces a specialist); reaction-type coverage is a separate
+axis from composition coverage; and errors must be reported by system size,
+not only in aggregate.  Chapter~9 documents the protocol and the pitfalls.
+
+\section{Where to go next}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}l X@{}}
+    \toprule
+    Chapter & Contents \\
+    \midrule
+    5 & Architecture: the three layers and what runs where \\
+    \ref{ch:calculators} & Calculator reference: parameters, examples, caveats \\
+    7 & SCINE integration: method-family injection and the bridge \\
+    8 & Uncertainty: disagreement definitions and the calibration protocol \\
+    9 & Active learning: training-set construction and validation \\
+    10 & Scripts: command-line tools for calibration, labelling and database hygiene \\
+    \ref{ch:configuration} & Example configuration files, field by field \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Reading paths from here.}
+\end{table}

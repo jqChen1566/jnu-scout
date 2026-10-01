@@ -1,0 +1,295 @@
+\chapter{Configuration Reference}
+\label{ch:configuration}
+
+The \file{configs/} directory ships two example configuration files: one for
+the unimolecular H\textsubscript{2}CO isomerization used as the first
+validation system, and one for a bimolecular Diels--Alder exploration
+(butadiene + ethylene).  They document the intended shape of a \jns{} run
+field by field and are the starting point for your own workflow scripts.
+
+\begin{notebox}[Status of these files]
+The package itself does not read these files: nothing in the released source
+parses \file{configs/*.yaml}.  They are example and reference material, not a
+validated schema, and the key names and structure may evolve between
+releases.  Treat the tables below as documentation of intent, and keep your
+own loader in step with it.
+\end{notebox}
+
+\section{\file{h2co.yaml} --- H\textsubscript{2}CO isomerization}
+
+\begin{excerpt}
+afir:
+  method: "sc-afir"
+  gamma: 340.0          # kJ/mol; calibrated above the estimated barrier (an AFIR run finds a
+                        # barrier only when gamma >= barrier height; the earlier 250 kJ/mol value
+                        # was below it)
+  t_reaction: 864000    # 10 days (conservative)
+  pre_screen_steps: 10
+\end{excerpt}
+
+\subsection*{\code{project}}
+
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+  \toprule
+  Key & Value and meaning \\
+  \midrule
+  \code{name} & \file{"h2co_validation"} --- identifier of the run. \\
+  \code{description} & \file{"H2CO isomerization validation"} --- free-text description. \\
+  \code{working_dir} & \file{"./runs/h2co_001"} --- directory for the products of the run. \\
+  \bottomrule
+\end{tabularx}
+
+\subsection*{\code{system}}
+
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+  \toprule
+  Key & Value and meaning \\
+  \midrule
+  \code{reactants} & list of input structures.  Each entry carries \code{file} (path to an \file{.xyz} file), \code{charge} and \code{multiplicity}; here one formaldehyde structure, \file{"./structures/h2co.xyz"}, charge 0, multiplicity 1. \\
+  \code{temperature} & \code{500.0} --- simulation temperature in K, used by the exploration. \\
+  \bottomrule
+\end{tabularx}
+
+\subsection*{\code{afir}}
+
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+  \toprule
+  Key & Value and meaning \\
+  \midrule
+  \code{method} & \file{"sc-afir"} --- single-component AFIR, appropriate for one reactant.  The bimolecular example uses \file{"mc-afir"}. \\
+  \code{gamma} & \code{340.0} kJ/mol --- the AFIR force constant.  The comment records the calibration rule: an AFIR run finds a barrier only when \code{gamma} is at least the barrier height, and an earlier value of 250 kJ/mol was below it. \\
+  \code{t_reaction} & \code{864000} --- reaction time in seconds (10 days, described as conservative). \\
+  \code{pre_screen_steps} & \code{10} --- number of pre-screening steps before the full search. \\
+  \bottomrule
+\end{tabularx}
+
+\subsection*{\code{dft} (L2: geometry optimisation and frequencies)}
+
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+  \toprule
+  Key & Value and meaning \\
+  \midrule
+  \code{program} & \file{"orca"}. \\
+  \code{functional} & \file{"r2SCAN-D4"} --- meta-GGA with D4 dispersion. \\
+  \code{basis} & \file{"def2-SVP"}. \\
+  \code{aux_basis} & \file{"def2/J"} --- auxiliary basis for the RI approximation. \\
+  \code{acceleration} & \file{"RIJCOSX"}; the comment notes that ORCA silently downgrades it to Split-RI-J for pure meta-GGAs and that the warning is harmless (no \file{RI-J} keyword exists). \\
+  \code{grid} & \file{"defgrid3"}. \\
+  \code{scf.convergence} & \file{"TightSCF"}. \\
+  \code{parallel.nprocs} & \code{4} --- number of processes. \\
+  \code{parallel.memory} & \code{4000} --- memory per core in MB (ORCA \%\code{maxcore} convention). \\
+  \bottomrule
+\end{tabularx}
+
+\subsection*{\code{high_precision} (L3: high-level single points)}
+
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+  \toprule
+  Key & Value and meaning \\
+  \midrule
+  \code{program} & \file{"orca"}. \\
+  \code{functional} & \file{"wB97M-V"}. \\
+  \code{basis} & \file{"def2-TZVP"}. \\
+  \code{aux_basis} & \file{"def2/JK"}. \\
+  \code{acceleration} & \file{"RIJCOSX"}. \\
+  \code{grid} & \file{"defgrid3"}. \\
+  \bottomrule
+\end{tabularx}
+
+\begin{notebox}[Auxiliary basis at L3]
+The configuration lists def2/JK, which is the intended production setting.
+The L3 keyword line shipped in \code{ORCA_KEYWORDS} currently uses
+\code{AutoAux} instead, because the def2/JK auxiliary basis was unavailable
+on the deployment host (Chapter~\ref{ch:calculators}).  Expect this
+difference when comparing the example to the code default.
+\end{notebox}
+
+\subsection*{\code{nnp}}
+
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+  \toprule
+  Key & Value and meaning \\
+  \midrule
+  \code{foundation_model} & \file{"MACE-MP-0"} --- the base model for fine-tuning. \\
+  \code{device} & \file{"cuda"}. \\
+  \code{committee.models} & \code{["MACE-MP-0", "MACE-MPA-0", "AIMNet2-b973c"]} --- the three committee members.  The comment records why AIMNet2 enters as \code{b973c}: the \code{wb97m_0} weights show a force-directionality defect. \\
+  \bottomrule
+\end{tabularx}
+
+\subsection*{\code{active_learning}}
+
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+  \toprule
+  Key & Value and meaning \\
+  \midrule
+  \code{initial_train_size} & \code{50} --- number of labelled frames before the first fine-tune. \\
+  \code{retrain_interval} & \code{25} --- new frames collected between fine-tunes. \\
+  \code{max_dft_per_iter} & \code{10} --- cap on reference (L2) calculations per iteration. \\
+  \code{uq_threshold_force} & \code{0.1} --- force-disagreement threshold in eV/\AA{} (the calibration target). \\
+  \bottomrule
+\end{tabularx}
+
+\subsection*{\code{database} and \code{output}}
+
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+  \toprule
+  Key & Value and meaning \\
+  \midrule
+  \code{database.type} & \file{"sqlite"}. \\
+  \code{database.path} & \file{"h2co_validation.db"} --- database file. \\
+  \code{database.checkpoint_interval} & \code{120} --- checkpoint interval for the database. \\
+  \code{output.report} & \file{"h2co_report.html"} --- HTML report of the run. \\
+  \code{output.log_level} & \file{"DEBUG"}. \\
+  \bottomrule
+\end{tabularx}
+
+\section{Bimolecular Diels--Alder (\texttt{diels\_alder.yaml})}
+
+\begin{excerpt}
+afir:
+  method: "mc-afir"     # multi-component AFIR for bimolecular reactions
+  gamma: 200.0          # kJ/mol
+  t_reaction: 86400     # 24 h
+  max_paths_per_eq: 500
+  pre_screen_steps: 10
+
+nnp:
+  foundation_model: "MACE-MP-0"
+  fine_tune: true
+  fine_tune_config:
+    epochs: 50
+    learning_rate: 1.0e-4
+    batch_size: 32
+\end{excerpt}
+
+The file follows the same section structure as \file{h2co.yaml}; the tables
+below list every field, marking those that read differently.
+
+\subsection*{\code{project}, \code{system}, \code{afir}}
+
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+  \toprule
+  Key & Value and meaning \\
+  \midrule
+  \code{project.name} & \file{"diels_alder"}. \\
+  \code{project.description} & \file{"JNUScout exploration of Diels-Alder (butadiene + ethylene)"}. \\
+  \code{project.working_dir} & \file{"./runs/diels_alder_001"}. \\
+  \code{system.reactants} & two entries: \file{"./structures/butadiene.xyz"} and \file{"./structures/ethylene.xyz"}, each charge 0, multiplicity 1. \\
+  \code{system.temperature} & \code{400.0} K (the comment states the unit). \\
+  \code{afir.method} & \file{"mc-afir"} --- multi-component AFIR, the variant for bimolecular reactions. \\
+  \code{afir.gamma} & \code{200.0} kJ/mol. \\
+  \code{afir.t_reaction} & \code{86400} --- 24 h. \\
+  \code{afir.max_paths_per_eq} & \code{500} --- cap on paths explored per elementary step. \\
+  \code{afir.pre_screen_steps} & \code{10}. \\
+  \bottomrule
+\end{tabularx}
+
+\subsection*{\code{dft} and \code{high_precision}}
+
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+  \toprule
+  Key & Value and meaning \\
+  \midrule
+  \code{dft.*} & identical to \file{h2co.yaml} (r2SCAN-D4/def2-SVP, def2/J, RIJCOSX, defgrid3, TightSCF), with two additions: \\
+  \code{dft.scf.max_iterations} & \code{200} --- SCF iteration cap. \\
+  \code{dft.parallel.nprocs} & \code{8} (vs.\ 4 for the single molecule). \\
+  \code{dft.parallel.memory} & \code{8000} MB. \\
+  \code{high_precision.*} & wB97M-V/def2-TZVP, def2/JK, RIJCOSX, defgrid3, plus an explicit \code{scf.convergence: TightSCF} and a \code{parallel} block: \code{nprocs: 16}, \code{memory: 4000}. \\
+  \bottomrule
+\end{tabularx}
+
+\subsection*{\code{nnp}}
+
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+  \toprule
+  Key & Value and meaning \\
+  \midrule
+  \code{foundation_model} & \file{"MACE-MP-0"}. \\
+  \code{fine_tune} & \code{true} --- fine-tuning is part of the run. \\
+  \code{fine_tune_config.epochs} & \code{50}. \\
+  \code{fine_tune_config.learning_rate} & \code{1.0e-4}. \\
+  \code{fine_tune_config.batch_size} & \code{32}. \\
+  \code{device} & \file{"cuda"}. \\
+  \code{committee.models} & \code{["MACE-MP-0", "MACE-MPA-0", "AIMNet2-b973c"]}. \\
+  \bottomrule
+\end{tabularx}
+
+\subsection*{\code{active_learning}}
+
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+  \toprule
+  Key & Value and meaning \\
+  \midrule
+  \code{initial_train_size} & \code{100} --- labelled frames before the first fine-tune. \\
+  \code{min_train_size_for_nnp} & \code{50} --- minimum training set before the NNP is used. \\
+  \code{retrain_interval} & \code{50} --- new frames between fine-tunes. \\
+  \code{fine_tune_epochs} & \code{50}. \\
+  \code{committee_size} & \code{3}. \\
+  \code{uq_threshold_force} & \code{0.1} eV/\AA{} (the unit is given in the comment). \\
+  \code{uq_threshold_energy} & \code{0.05} eV. \\
+  \code{max_dft_per_iter} & \code{20} --- cap on reference calculations per iteration. \\
+  \code{diversity_weight} & \code{0.3} --- weight of the diversity term in frame selection. \\
+  \code{max_iterations} & \code{20} --- cap on active-learning rounds. \\
+  \code{convergence_window} & \code{3} --- rounds examined for the convergence check. \\
+  \code{convergence_tolerance} & \code{0.01} --- tolerance of the convergence check. \\
+  \bottomrule
+\end{tabularx}
+
+\subsection*{\code{database} and \code{output}}
+
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+  \toprule
+  Key & Value and meaning \\
+  \midrule
+  \code{database.type} & \file{"sqlite"}. \\
+  \code{database.path} & \file{"reaction_network.db"}. \\
+  \code{database.checkpoint_interval} & \code{300}. \\
+  \code{output.report} & \file{"report.html"}. \\
+  \code{output.network_json} & \file{"network.json"} --- JSON export of the reaction network. \\
+  \code{output.network_graphml} & \file{"network.graphml"} --- GraphML export for network visualisation. \\
+  \code{output.log_level} & \file{"INFO"} (vs.\ \file{"DEBUG"} in the H\textsubscript{2}CO example). \\
+  \bottomrule
+\end{tabularx}
+
+\section{What differs between the two examples}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}l l l X@{}}
+    \toprule
+    Field & \file{h2co.yaml} & \file{diels_alder.yaml} & Why \\
+    \midrule
+    \code{afir.method} & \file{sc-afir} & \file{mc-afir} & one reactant vs.\ two \\
+    \code{afir.gamma} & 340 & 200 & calibrated per system \\
+    \code{afir.t_reaction} & 864000 (10 d) & 86400 (24 h) & exploratory budget \\
+    \code{afir.max_paths_per_eq} & --- & 500 & bimolecular path multiplicity \\
+    \code{dft.parallel} & 4 procs / 4000 MB & 8 procs / 8000 MB & larger system \\
+    \code{dft.scf.max_iterations} & --- & 200 & SCF difficulty of the larger system \\
+    \code{nnp.fine_tune} & --- & true (+ config) & fine-tuning is part of the DA workflow \\
+    \code{active_learning} & 4 fields & 12 fields & full active-learning loop \\
+    \code{output.network_*} & --- & JSON + GraphML & reaction-network export \\
+    \code{output.log_level} & DEBUG & INFO & validation vs.\ production logging \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Differences between the two example configurations.}
+\end{table}
+
+\section{Units and conventions}
+
+\begin{itemize}
+  \item \code{afir.gamma} is in kJ/mol; \code{t_reaction} in seconds
+  (86400 = 24 h, 864000 = 10 days); \code{system.temperature} in K.
+  \item Uncertainty thresholds: \code{uq_threshold_force} in eV/\AA{},
+  \code{uq_threshold_energy} in eV.
+  \item \code{parallel.memory} follows the ORCA convention (MB per core,
+  \%\code{maxcore}).
+  \item Field names are lower-case with underscores throughout; nested
+  blocks are indentation-based YAML mappings, and the two files share the
+  same top-level section order (\code{project}, \code{system}, \code{afir},
+  \code{dft}, \code{high_precision}, \code{nnp}, \code{active_learning},
+  \code{database}, \code{output}).
+  \item Inline comments in both files carry calibration notes (the
+  \code{gamma} rule for H\textsubscript{2}CO, the AIMNet2 variant choice) and
+  are worth reading before changing a value.
+\end{itemize}

@@ -1,0 +1,42 @@
+\chapter{Environment Variables}
+\label{app:env}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{p{4.6cm}p{7.6cm}p{3.2cm}}
+\toprule
+Variable & Purpose & Default \\
+\midrule
+\code{ORCA_BIN} & Path to the ORCA executable (L2/L3 calculations) & \code{"orca"} (PATH lookup) \\
+\code{XTB_BIN} & Path to the xtb executable (L1 calculations) & \code{"xtb"} (PATH lookup) \\
+\code{MACE_MP0_PATH} & MACE-MP-0 weights: a \code{.model} file path, or the size keyword & \code{"medium"} (downloads on first use) \\
+\code{MACE_MPA0_PATH} & MACE-MPA-0 weights & \code{~/.cache/mace/mace-mpa-0-medium.model} \\
+\code{NNP_AFIR_PUFFIN} & \code{=1} enables the Puffin injection patch & unset (patch off) \\
+\code{NNP_AFIR_METHOD_FAMILY} & Method families to intercept (comma-separated) & the package's declared families \\
+\code{NNP_AFIR_BACKEND} & Bridge backend: \code{emt} / \code{mace} / \code{aimnet2} / \code{committee} & \code{mace} \\
+\code{NNP_AFIR_MODEL} & Model path (for \code{mace}) or model name (for \code{aimnet2}) & required when \code{BACKEND=mace} \\
+\code{NNP_AFIR_DEVICE} & Torch device for the ML potentials & \code{cuda} \\
+\code{NNP_AFIR_PUFFIN_VERBOSE} & \code{=1} prints patch hit messages & unset \\
+\code{NNP_AFIR_BRIDGE_VERBOSE} & \code{=1} prints bridge diagnostics & unset \\
+\code{NNP_PATCH_VERBOSE} & \code{=1} prints readuct-patch diagnostics & unset \\
+\code{JNUSCOUT_RDKIT_PY} & Python interpreter with RDKit (for \script{check_structure_identity}) & must be set explicitly \\
+\code{JNUSCOUT_RDKIT_HELPER} & Path to \file{_rdkit_perceive.py} & the copy shipped in \file{scripts/} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{notebox}[On the NNP\_AFIR\_* prefix]
+The \code{NNP_AFIR_*} names are kept from earlier deployments for
+compatibility; environment variables introduced later use the
+\code{JNUSCOUT_*} prefix.  Treat both prefixes as part of the stable
+interface: renamed variables would silently disable patches on machines
+that have the old names exported.
+\end{notebox}
+
+\begin{readbox}[Offline machines]
+On machines without network access, set \code{MACE_MP0_PATH} and
+\code{MACE_MPA0_PATH} to local \code{.model} files before the first
+calculation; otherwise MACE attempts to download its weights when the
+committee is constructed.  ORCA and xtb are external executables and are
+never downloaded by this package.
+\end{readbox}

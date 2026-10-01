@@ -1,0 +1,93 @@
+\chapter{Introduction}
+\label{ch:introduction}
+
+\section{Why automated reaction-path search}
+
+Reaction networks are the map of a chemical system: which elementary steps
+connect which intermediates, and how high the barriers along the way are.
+Mapping them by hand is slow and biased -- any path an expert does not think
+of is a path that is never computed.  Automated exploration methods, such as
+the artificial force induced reaction (AFIR) method \cite{maeda2016afir},
+remove the bias: an artificial force term is added to the potential energy
+surface (PES) to push fragments together or apart, and the modified surface
+is minimised to obtain approximate reaction paths.
+
+The cost is the bottleneck.  Every trial path needs hundreds of energy and
+gradient evaluations, traditionally from density functional theory (DFT), and
+an exploration involves thousands of trials.  Two levers are available to
+make this affordable: better machinery (parallel scheduling, job daemons)
+and cheaper potential energy evaluations.  \jns{} attacks the second lever.
+
+\section{Machine-learning potentials, and what they cannot promise}
+
+Machine-learning potentials (MLPs) fit the PES of a family of molecules with
+neural networks, reproducing near-DFT energies and forces at a small
+fraction of the cost.  Modern architectures -- MACE's equivariant message
+passing \cite{batatia2022mace} and the MACE-MP-0 materials foundation model
+\cite{batatia2025mpa}, or AIMNet2 for molecular and elemental-organic
+chemistry \cite{anstine2025aimnet2} -- are accurate on chemistry they were
+trained for.
+
+The trap is that reaction-path search deliberately leaves the training
+distribution.  AFIR pushes geometries into compressed and stretched
+structures -- exactly the high-energy, bond-forming and bond-breaking
+configurations that near-equilibrium training sets under-represent.  A
+model that is accurate to 1 kcal/mol on equilibrium molecules can be wrong
+by an order of magnitude on a strained saddle region, and the error is
+systematic and silent: nothing in the output says ``this number is outside
+my domain''.  The Passerini controversy studies
+\cite{staub2023,staub2025} make the same point from the other direction: a
+carefully iterated potential was needed before a mechanism question could be
+settled.
+
+\section{The design idea: uncertainty as a run-time decision}
+
+\jns{} takes the position that a fast prediction is only useful together
+with a statement of its reliability, and that this statement should be
+\emph{measured}, not assumed.  Three ingredients implement this:
+
+\begin{enumerate}
+  \item \textbf{A committee of different architecture families.}  Two MACE
+    models and one AIMNet2 model evaluate every geometry; their spread is a
+    signal of how contested the prediction is.  Members from a single family
+    would agree with each other almost perfectly and carry no signal.
+  \item \textbf{A calibrated threshold.}  The disagreement score is
+    calibrated against reference errors, so that the probability of a
+    dangerous geometry slipping below the threshold is bounded by
+    construction (Chapter \ref{ch:uncertainty}).
+  \item \textbf{A hard fallback.}  When the threshold is exceeded, the
+    evaluation goes to ORCA at the production level instead of the MLP.  The
+    fallback is real quantum chemistry, not an extrapolated correction.
+\end{enumerate}
+
+The framework itself does not run your exploration for you: it supplies the
+calculators and the integration glue, you run the engine.  The exploration
+engine is SCINE Chemoton \cite{unsleber2022chemoton,weymuth2024scine} with
+its job daemon Puffin \cite{bensberg2025puffin}, both open source; the whole
+stack -- SCINE, MACE, AIMNet2, ASE \cite{larsen2017ase} -- is publicly
+available, with ORCA \cite{neese2022orca} as the academic reference program.
+
+\section{Relation to existing work}
+
+Driving reaction-path exploration with MLPs is an active line of work.  The
+GRRM-based studies of Staub et al.\ \cite{staub2023,staub2025} train
+SpookyNet-family potentials for targeted systems; the SCINE group's Parrot
+module \cite{eckhoff2025parrot} integrates lifelong-learning potentials into
+the same engine family used here.  \jns{} occupies the adjacent position of
+a lightweight, fully open adaptation route: it reuses public foundation
+models instead of training a general-purpose potential from scratch, adapts
+them to a reaction family with a few hundred labelled frames, and adds the
+run-time uncertainty layer described above.  Its purpose is not to replace
+the existing routes but to lower the entry cost of running one.
+
+\section{How this manual is organised}
+
+Chapters \ref{ch:installation}--\ref{ch:getting-started} get you running
+quickly.  Chapters \ref{ch:architecture}--\ref{ch:uncertainty} explain the
+design: the three-layer architecture, the calculators, the SCINE
+integration, and the uncertainty machinery.  Chapter
+\ref{ch:active-learning} documents the active-learning workflow and
+Chapter \ref{ch:scripts} the utility scripts.  Chapters
+\ref{ch:configuration} and \ref{ch:development} are reference material for
+configuration fields and for development practices.  The appendices collect
+constants, environment variables and terminology.

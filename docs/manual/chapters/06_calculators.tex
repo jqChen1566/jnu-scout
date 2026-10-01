@@ -1,0 +1,383 @@
+\chapter{Calculators}
+\label{ch:calculators}
+
+All calculators in \jns{} implement the ASE \code{Calculator} protocol
+\cite{larsen2017ase}.  They can be used stand-alone --- geometry
+optimisation with ASE, single-point scans, custom workflows --- without the
+SCINE engine, and they are the building blocks the engine integration
+(Chapter~7) resolves.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}l l l X@{}}
+    \toprule
+    Class & Level & Backend & Role \\
+    \midrule
+    \code{SafeNNPCalculator} & L0 & NNP committee + ORCA fallback & exploration with run-time trust control \\
+    \code{XTBCalculator} & L1 & GFN2-xTB \cite{bannwarth2019gfn2} & fast pre-screening, initial geometries \\
+    \code{ORCACalculator} & L2 & ORCA r2SCAN-D4/def2-SVP & geometry optimisation and frequencies (production) \\
+    \code{ORCACalculator} & L3 & ORCA wB97M-V/def2-TZVP & high-level single points \\
+    \code{NNPCommittee} & --- & MACE-MP-0, MACE-MPA-0, AIMNet2-b973c & fast potential with a disagreement measure \\
+    \bottomrule
+  \end{tabularx}
+  \caption{The calculators and their levels.  \code{CalculatorFactory}
+  returns one per level; \code{NNPCommittee} is not a calculator itself but
+  the predictor behind L0.}
+\end{table}
+
+\section{Conventions shared by all calculators}
+
+\paragraph{Units.}
+ASE conventions throughout: energy in eV, forces in eV/\AA.  The external
+programs report Hartree and Hartree/bohr; the conversion is
+$27.211386245$ for the energy and $F\,[\text{eV/\AA}] = -\nabla E \cdot
+27.211386245 / 0.5291772109$ for the forces.
+
+\paragraph{Properties.}
+Every calculator in this version declares exactly \code{energy} and
+\code{forces}.  There is no stress tensor, no Hessian and no charge output
+from these classes.
+
+\paragraph{Caching.}
+Results follow the ASE protocol: one backend evaluation produces energy and
+forces together, and repeated property requests on an unchanged \code{Atoms}
+object reuse the cached values without a new evaluation.  To force a
+re-evaluation, change the geometry or use a fresh calculator instance.  This
+also means the counters of \code{SafeNNPCalculator} count evaluations, not
+property accesses --- a distinction that matters when measuring cost or
+fallback rates.
+
+\paragraph{Scratch files and failures.}
+External programs run in a temporary directory that is removed after the
+call.  Passing \code{keep_files=True} together with \code{workdir} keeps
+the input, output and gradient files there for inspection.  A backend that
+exits non-zero or writes no result file raises \code{RuntimeError} naming
+the output file.  Constructing a calculator never launches a program; the
+backend runs on the first calculation.
+
+\section{\code{XTBCalculator} (L1)}
+
+GFN2-xTB \cite{bannwarth2019gfn2} through the \code{xtb} command line, for
+fast pre-screening and initial geometries.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}l l X@{}}
+    \toprule
+    Parameter & Default & Meaning \\
+    \midrule
+    \code{method} & \file{"GFN2-xTB"} & also \file{"GFN1-xTB"}, \file{"GFN0-xTB"}, \file{"GFNFF"} \\
+    \code{charge} & \code{0} & total charge passed as \code{--chrg} \\
+    \code{mult} & \code{1} & spin multiplicity; converted to \code{--uhf mult-1}, i.e.\ the number of unpaired electrons \\
+    \code{keep_files} & \code{False} & keep the scratch files in \code{workdir} \\
+    \code{workdir} & \code{None} & scratch directory (used when \code{keep_files} is true) \\
+    \code{xtb_bin} & \code{XTB_BIN} or \file{xtb} & executable to call \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\code{XTBCalculator} arguments.}
+\end{table}
+
+\begin{codeblock}
+from ase.build import molecule
+from jnuscout.calculators import XTBCalculator
+
+atoms = molecule("H2O")
+atoms.calc = XTBCalculator(method="GFN2-xTB")
+energy_ev = atoms.get_potential_energy()
+forces = atoms.get_forces()          # shape (3, 3), eV/A
+\end{codeblock}
+
+Notes: the wrapper writes \file{mol.xyz}, runs xtb with
+\code{--gfn}/\code{--chrg}/\code{--uhf}/\code{--grad}, reads the total energy
+from the output and the gradient from the gradient file (Hartree/bohr,
+converted to eV/\AA).  The executable must be installed
+(Chapter~\ref{ch:installation}); a run that fails or writes no gradient
+raises \code{RuntimeError}.
+
+\section{\code{ORCACalculator} (L2/L3)}
+
+Single-point energy and gradient from ORCA \cite{neese2022orca}.  L2 is the
+production level for geometry optimisation and frequencies; L3 provides
+high-level single points.  The keyword lines are defined in
+\code{ORCA_KEYWORDS}:
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}l X@{}}
+    \toprule
+    Level & ORCA keywords \\
+    \midrule
+    \code{"L2"} & \code{r2SCAN D4 def2-SVP RIJCOSX def2/J TightSCF} \\
+    \code{"L3"} & \code{wB97M-V def2-TZVP RIJCOSX AutoAux defgrid3 TightSCF} \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Method and basis per level (r2SCAN \cite{furness2020r2scan},
+  D4 \cite{caldeweyher2019d4}, wB97M-V \cite{mardirossian2016wb97mv}).}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}l l X@{}}
+    \toprule
+    Parameter & Default & Meaning \\
+    \midrule
+    \code{level} & \file{"L2"} & \file{"L2"} or \file{"L3"}; anything else raises \code{ValueError} \\
+    \code{nprocs} & \code{8} & the \%\code{pal nprocs} directive in the input \\
+    \code{maxcore} & \code{4000} & the \%\code{maxcore} directive, memory in MB per core \\
+    \code{keep_files} & \code{False} & keep \file{.inp}/\file{.out}/\file{.engrad} in \code{workdir} \\
+    \code{workdir} & \code{None} & scratch directory (used when \code{keep_files} is true) \\
+    \code{orca_bin} & \code{ORCA_BIN} or \file{orca} & executable to call \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\code{ORCACalculator} arguments.}
+\end{table}
+
+\begin{codeblock}
+from ase import Atoms
+from jnuscout.calculators import ORCACalculator
+
+atoms = Atoms("H2O", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.96], [0.0, 0.93, -0.24]])
+atoms.calc = ORCACalculator(level="L2", nprocs=4, maxcore=2000)
+energy_ev = atoms.get_potential_energy()
+forces = atoms.get_forces()          # eV/A
+\end{codeblock}
+
+Notes:
+\begin{itemize}
+  \item The charge and multiplicity of the ORCA input are taken from the
+  \code{initial_charges} and \code{initial_magnetic_moments} arrays of the
+  \code{Atoms} object (their sums); with neither array present the input is
+  neutral and singlet.
+  \item L2 uses RIJCOSX with the def2/J auxiliary basis.  r2SCAN is a pure
+  meta-GGA without Hartree--Fock exchange, so ORCA automatically downgrades
+  RIJCOSX to Split-RI-J and prints a warning; the warning is harmless and
+  there is no separate \code{RI-J} keyword.
+  \item L3 uses an AutoAux-generated auxiliary basis.  The originally
+  specified def2/JK set was not available on the deployment host (no local
+  auxiliary-basis file and no network access for the automatic download), so
+  AutoAux is the tested default.
+  \item The input asks for \code{Engrad}; the calculator parses the
+  \file{.engrad} file for energy and gradient and verifies the atom count
+  against the structure.
+  \item ORCA is launched in an adjusted environment; if the binary cannot
+  find its libraries or \file{mpirun}, see the notes in
+  Chapter~\ref{ch:installation}.
+\end{itemize}
+
+\section{\code{NNPCommittee}}
+
+The committee is the prediction backend of L0: three foundation models from
+different architecture families --- MACE-MP-0 and MACE-MPA-0
+\cite{batatia2022mace,batatia2025mpa} and AIMNet2-b973c
+\cite{anstine2025aimnet2} --- whose disagreement is the uncertainty signal.
+Members from the same family (differently seeded fine-tunes) predict almost
+the same and cannot serve as a measure, which is why the families are mixed.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}l l X@{}}
+    \toprule
+    Member & Backend & Model identifier \\
+    \midrule
+    \code{MACE-MP-0} & \code{mace} & \code{MACE_MP0_PATH}, default \file{medium} \\
+    \code{MACE-MPA-0} & \code{mace} & \code{MACE_MPA0_PATH}, default the cached medium model \\
+    \code{AIMNet2-b973c} & \code{aimnet2} & \file{aimnet2_b973c} (weights resolved by the \file{aimnet2} package) \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Default committee members.  The AIMNet2 base is the \code{b973c}
+  variant; the \code{wb97m_0} variant showed a force-directionality defect
+  against ORCA references and is not used.}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}l l X@{}}
+    \toprule
+    Argument & Default & Meaning \\
+    \midrule
+    \code{members} & the three members above & list of \code{(name, backend, model_id)} tuples \\
+    \code{device} & \file{"cuda"} & \file{"cuda"} or \file{"cpu"}, passed to the backends \\
+    \code{energy_baselines} & \code{None} & per-member per-atom energy offsets in eV, from calibration \\
+    \code{energy_family} & \file{"mace"} & backend family used for the energy disagreement; \code{None} picks the largest family \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\code{NNPCommittee} arguments.}
+\end{table}
+
+\begin{codeblock}
+from ase.build import molecule
+from jnuscout.calculators import NNPCommittee
+
+committee = NNPCommittee(device="cuda")
+report = committee.compute(molecule("H2O"))
+print(report["uq_force"], report["uq_energy"])   # eV/A and eV/atom
+print(report["energy_mean"])                     # eV (ensemble)
+print(report["per_member_energy"])               # per-member raw energies
+\end{codeblock}
+
+\begin{readbox}[Disagreement definitions]
+For a committee of $M$ members on a system of $N$ atoms, with $F_{i,j}$ the
+force on atom $j$ from member $i$:
+\[
+uq_F = \max_{j} \max_{i} \lVert F_{i,j} - \bar{F}_{j} \rVert
+\quad[\text{eV/\AA}],
+\qquad
+uq_E = \frac{\operatorname{std}_i(E_i)}{N}
+\quad[\text{eV/atom}].
+\]
+The force disagreement is a maximum over atoms, not a mean: in reacting
+geometries the failure is usually one atom with a wrong force direction,
+which averaging would hide.  The energy disagreement is computed only among
+members of one backend family (\code{energy_family}), because absolute
+energies of different families have different zeros --- MACE reports
+atomization energies, AIMNet2 absolute total energies --- so subtracting
+across families is not meaningful.
+\end{readbox}
+
+The report returned by \code{disagreement()} and \code{compute()} contains
+\code{uq_energy}, \code{uq_force}, \code{energy_mean} (eV, ensemble),
+\code{forces_mean} (\AA$\times$3 array, eV/\AA), \code{energy_spread} and
+\code{energy_spread_raw} (after and before baseline alignment),
+\code{baselines_aligned} (bool), \code{per_member_energy}, and --- from
+\code{compute()} --- \code{per_member_forces}.  \code{compute()} also
+stores the report in \code{last_report}.
+
+Notes:
+\begin{itemize}
+  \item Member calculators are built lazily on the first prediction and
+  cached per member; the first call therefore includes the model load.
+  \item Energy baselines are per-atom offsets.  Without calibration,
+  \code{uq_energy} is a diagnostic on raw absolute energies and has no
+  physical meaning.  \code{calibrate_baselines}\allowbreak\code{(atoms_list)} estimates the
+  offsets from the per-model mean energies over a common set of
+  configurations; the alignment is approximate, and any configuration-dependent
+  bias of a member leaks into \code{uq_energy}.  The force disagreement is
+  unaffected by constant offsets, which is why it is the default criterion.
+  \item Degenerate inputs are reported as \code{logging} warnings, not
+  errors: prediction keys that do not match the members, an
+  \code{energy_family} with no available members, and members missing from
+  \code{energy_baselines}.  Fewer than two predictions raise
+  \code{ValueError}.
+\end{itemize}
+
+\section{\code{SafeNNPCalculator} (L0)}
+
+The committee plus a calibrated threshold: below it the ensemble mean is
+returned, at or above it the structure is re-evaluated with ORCA L2.  This
+is the calculator the engine uses during exploration, and the mechanism the
+package is built around.  The fallback idea is related to, but not the same
+as, the smoothly added xTB guardrail of Staub et al.\ \cite{staub2023}:
+there it participates in every prediction with no threshold, whereas here
+the decision is explicit and calibrated.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}l l X@{}}
+    \toprule
+    Argument & Default & Meaning \\
+    \midrule
+    \code{theta_force} & (required) & force-disagreement threshold in eV/\AA; from calibration \\
+    \code{theta_energy} & \code{None} & energy threshold in eV/atom; \code{None} = force criterion only \\
+    \code{fallback_level} & \file{"L2"} & level passed to the fallback \code{ORCACalculator} \\
+    \code{committee} & fresh \code{NNPCommittee} & inject a prepared committee \\
+    \code{device} & \file{"cuda"} & passed to the default committee \\
+    \code{use_or_rule} & \code{True} & trigger on either criterion (see below) \\
+    \code{fallback_kwargs} & \code{None} & extra keywords for the fallback calculator, e.g.\ \code{{"nprocs": 8}} \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\code{SafeNNPCalculator} arguments.}
+\end{table}
+
+The decision rule, with $\theta_F$ = \code{theta_force} and $\theta_E$ =
+\code{theta_energy}:
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}l X@{}}
+    \toprule
+    Configuration & Fallback when \\
+    \midrule
+    \code{theta_energy} is \code{None} & $uq_F \ge \theta_F$ \\
+    \code{use_or_rule=True} (default) & $uq_F \ge \theta_F$ or $uq_E \ge \theta_E$ (conservative) \\
+    \code{use_or_rule=False} & both thresholds are reached (AND rule) \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Fallback conditions.  The comparison is \code{>=}; a disagreement
+  exactly equal to the threshold triggers the fallback.}
+\end{table}
+
+\begin{codeblock}
+from ase.io import read
+from jnuscout.calculators import SafeNNPCalculator
+
+calc = SafeNNPCalculator(theta_force=0.30, theta_energy=0.05,
+                         device="cuda", fallback_kwargs={"nprocs": 8})
+atoms = read("molecule.xyz")
+atoms.calc = calc
+energy_ev = atoms.get_potential_energy()
+
+print(calc.n_fallback, "/", calc.n_calls)   # fallbacks / evaluations
+print(calc.stats())                         # dict with the fallback rate
+print(calc.last_path)                       # "nnp" or "fallback"
+print(calc.last_uq)                         # full report of the last evaluation
+\end{codeblock}
+
+Notes:
+\begin{itemize}
+  \item \code{theta_force} has no default.  It must come from the
+  calibration protocol (path~1 of Chapter~\ref{ch:getting-started}); the
+  factory's L0 requires it as well.
+  \item The fallback calculator is constructed on the first fallback
+  (using \code{fallback_level} and \code{fallback_kwargs}) and reused
+  afterwards, so ORCA is not started unless a fallback occurs.
+  \item The committee runs once per calculation.  On the NNP path the
+  returned energy and forces are the ensemble mean; on the fallback path the
+  ORCA values replace them entirely, and the NNP result for that geometry is
+  discarded.
+  \item \code{n_calls} counts committee evaluations, \code{n_fallback} the
+  subset routed to ORCA; both follow the ASE caching semantics described
+  above.
+\end{itemize}
+
+\section{\code{CalculatorFactory}}
+
+One call per level, returning the calculator described in the sections
+above:
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}l l X@{}}
+    \toprule
+    Level & Returns & Notes \\
+    \midrule
+    \code{"L0"} & \code{SafeNNPCalculator(**kwargs)} & \code{theta_force} is required; no default threshold \\
+    \code{"L1"} & \code{XTBCalculator(...)} & consumes \code{method} (default \file{"GFN2-xTB"}) \\
+    \code{"L2"} & \code{ORCACalculator(level="L2", ...)} & \\
+    \code{"L3"} & \code{ORCACalculator(level="L3", ...)} & \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\code{CalculatorFactory.create(level, **kwargs)} routing.}
+\end{table}
+
+\begin{codeblock}
+from jnuscout.calculators import CalculatorFactory
+
+safe = CalculatorFactory.create("L0", theta_force=0.30)
+cheap = CalculatorFactory.create("L1", charge=-1, mult=2)
+prod = CalculatorFactory.create("L2", nprocs=8, maxcore=4000)
+\end{codeblock}
+
+Notes: \code{create} is a static method, callable on the class or an
+instance.  By design L0 has no default threshold, so
+\code{CalculatorFactory.create("L0")} raises \code{TypeError}; an unknown
+level raises \code{ValueError}.  Construction itself never launches a
+backend.

@@ -1,0 +1,53 @@
+\chapter{Glossary}
+\label{app:glossary}
+
+\begin{description}
+  \item[AFIR] Artificial Force Induced Reaction.  A search method that adds
+    an artificial force term to the PES to push fragments together
+    ($\rho=+1$) or apart ($\rho=-1$), then minimises the modified surface.
+  \item[MC-AFIR] Multi-component AFIR: AFIR applied to several reactant
+    molecules, for bimolecular and multi-molecular reactions.
+  \item[MEP] Minimum energy path: the steepest-descent path connecting a
+    reactant, a transition state and a product on the PES.
+  \item[IRC] Intrinsic reaction coordinate: the mass-weighted MEP, the
+    standard definition of a reaction path.
+  \item[TS] Transition state: a first-order saddle point of the PES.
+  \item[PES] Potential energy surface.
+  \item[MLP / NNP] Machine-learning potential / neural-network potential:
+    a model that predicts energies and forces from atomic structure.
+  \item[Foundation model] An MLP pre-trained on a very large, broad dataset
+    (e.g.\ MACE-MP-0), usable as a starting point for fine-tuning.
+  \item[Committee] The set of ML potentials whose spread defines the
+    uncertainty; in \jns{}: MACE-MP-0, MACE-MPA-0 and AIMNet2-b973c.
+  \item[Disagreement] The spread among committee members on a given
+    geometry; $\mathrm{uq}_F$ (force) and $\mathrm{uq}_E$ (energy), defined
+    in Chapter \ref{ch:uncertainty}.
+  \item[UQ] Uncertainty quantification: here, the calibrated use of the
+    disagreement score to decide whether a prediction is trustworthy.
+  \item[Threshold $\theta$] The calibrated cut-off on the disagreement
+    score above which the safe calculator falls back.
+  \item[Fallback] Replacing an MLP evaluation with a reference-program
+    evaluation (ORCA L2) when the threshold is exceeded.
+  \item[Bridge] The adapter that exposes an ASE calculator through SCINE's
+    Python-calculator interface (\code{jnuscout.scine.bridge}).
+  \item[Injection patch] A process-level patch that replaces SCINE's
+    calculator-resolution functions so the engine can find the bridge.
+  \item[Method family] SCINE's string key for a calculator type (e.g.\
+    \code{dftb3}, or \code{nnp} for the potentials registered here).
+  \item[Chemoton] The open-source reaction-network exploration engine of
+    the SCINE project.
+  \item[Puffin] The SCINE job daemon that executes calculations for
+    Chemoton.
+  \item[readuct] The SCINE elementary-step module (optimisation, TS search,
+    IRC) that runs inside Puffin jobs.
+  \item[L0--L3] The four calculation levels of the method chain: L0
+    (safe MLP), L1 (GFN2-xTB), L2 (r2SCAN-D4), L3 (wB97M-V).
+  \item[Spline] The stored reaction path of an elementary step in the
+    search database, parameterised by a progress variable $t$;
+    \code{evaluate(t)} returns the geometry at fraction $t$.
+  \item[Active learning] The loop that samples configurations, labels them
+    with the reference program, fine-tunes the potential and re-validates
+    it (Chapter \ref{ch:active-learning}).
+  \item[Held-out set] Reactions (not frames) excluded from training, used
+    to measure the fine-tuned model's generalisation.
+\end{description}

@@ -1,0 +1,161 @@
+\chapter{Active Learning}
+\label{ch:active-learning}
+
+A potential that explores a reaction network must be accurate on exactly the
+configurations the exploration visits: strained geometries, partially formed
+bonds, transition-state regions.  A foundation model is not, and the failure
+is systematic rather than random -- on the development benchmark the barrier
+heights carried a fitted slope of 0.588, a strong compression that a
+post-hoc linear correction cannot repair across systems.  The protocol used
+here therefore turns explored paths into labelled data and labelled data into
+a fine-tuned potential, in a five-step loop: sample, label, split, fine-tune,
+verify.  Each step has a stand-alone tool, listed in
+Chapter~\ref{ch:scripts}.
+
+Related strategies appear in the literature: iteratively trained neural
+network potentials for reaction-path search \cite{staub2025}, lifelong
+machine-learning potentials \cite{eckhoff2025parrot}, and analyses of where
+NNPs fail for kinetics predictions \cite{staub2023}.  The protocol below is
+the one implemented and measured in this package.
+
+\section{The five-step loop}
+\label{sec:al-loop}
+
+\begin{table}[htbp]
+\centering
+\caption{The active-learning loop and the tool for each step.  Sampling and
+labelling are the two halves of one script; fine-tuning itself is performed
+by the external trainer.}
+\label{tab:al-steps}
+\begin{tabularx}{\textwidth}{@{}llX@{}}
+\toprule
+Step & Tool & What happens \\
+\midrule
+1.\ Sample & \script{build_al_trainset} & configurations along the MEP, via \code{spline.evaluate(t)} \\
+2.\ Label & \script{build_al_trainset} & ORCA L2 energies and forces, in parallel \\
+3.\ Split & \script{resplit_trainset} & composition-stratified, reaction-grouped \\
+4.\ Fine-tune & (external trainer) & MACE fine-tuning on the labelled frames \\
+5.\ Verify & \script{validate_finetune} & barrier MAE and bias decomposition on held-out reactions \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Step 1: sampling the paths}
+\label{sec:al-sample}
+
+The sampling unit is the minimum-energy path the search has already refined.
+Each elementary step in the database carries a spline fit of that path, and
+\code{spline.evaluate(t)} returns a complete geometry at a fraction $t$ of the
+reaction coordinate: $t=0$ is the reactant, $t$ at the spline's
+\code{ts_position} is the transition state.  Sampling through the spline call,
+rather than re-parsing the stored coordinate arrays, keeps the frames
+consistent with the path.
+
+A uniform grid wastes its points: at fifteen points only one or two land near
+the transition state, which is exactly where the energy is most sensitive to
+the barrier and the forces are largest.  \script{build_al_trainset} therefore
+places half of the requested points inside a window of $\pm0.25$ around the
+transition state and distributes the rest over the full path
+(\code{sample_ts_weights}); the \code{--uniform} flag restores the uniform
+grid.
+
+\subsection{Step 2: labelling}
+\label{sec:al-label}
+
+Every sampled frame is labelled with ORCA at level L2
+(r2SCAN-D4/def2-SVP \cite{furness2020r2scan,caldeweyher2019d4,neese2022orca}).
+The labelling runs in worker processes and writes one frame per configuration
+in extended-xyz format, with energies and Cartesian forces in eV and \AA, the
+element list, and the bookkeeping fields (\code{es_id}, $t$) that the later
+steps use to group and stratify.  Frames whose reference calculation fails are
+skipped and counted rather than silently replaced.
+
+\subsection{Step 3: splitting}
+\label{sec:al-split}
+
+The split must be stratified by composition and grouped by reaction.  Two
+failure modes motivate this.  An initial split that simply took the tail of
+the elementary-step order produced a training set entirely of C$_4$H$_6$ and a
+validation set entirely of C$_6$H$_{10}$; the trainer scored the validation
+set with the training set's atomic energies and reported an energy RMSE of
+29~eV/atom.  And a random split of frames would place consecutive frames of
+one path -- nearly identical geometries -- on both sides of the split.
+\script{resplit_trainset} merges the available frame batches and re-splits
+them: frames are grouped by elementary step (\code{es_id}), and the steps are
+divided 8:2 per composition so that both sides share the same composition
+distribution.
+
+\subsection{Step 4: fine-tuning}
+\label{sec:al-finetune}
+
+Fine-tuning uses MACE \cite{batatia2022mace} on the labelled frames, with the
+held-out reactions as the validation set -- never random frames of trained
+reactions.  Two practical points are worth recording, because both failure
+modes are opaque:
+
+\begin{itemize}
+  \item the frames carry the keys \code{energy} and \code{forces}; if the
+        trainer's default key names differ, it must be told to read these;
+  \item the model's element coverage follows the training data, so the
+        training and validation sets must cover every element of the target
+        chemistry.  A potential fine-tuned on C/H data alone will refuse
+        configurations that contain oxygen.
+\end{itemize}
+
+\subsection{Step 5: verification}
+\label{sec:al-verify}
+
+Verification re-scores the held-out reactions and reports the mean absolute
+error of the barrier heights together with its decomposition: by composition,
+by reaction type, and by system size.  For bimolecular elementary steps, where
+the path cannot be rebuilt by concatenating the reactant fragments, the
+barrier is evaluated from the spline endpoints -- reactant at $t=0$,
+transition state at the spline's \code{ts_position} -- so that the reference
+and every model see the same two geometries
+(\script{eval_barrier_spline}).  \script{validate_finetune} performs the
+comparison between the fine-tuned model, the foundation model and the ORCA
+reference on the held-out frames.
+
+\section{Three lessons}
+\label{sec:al-lessons}
+
+\subsection{Training composition determines generality}
+A single-composition training set produces a specialist: excellent inside its
+composition, worse than the untuned foundation model outside it.  Extending
+the training composition removes that specialisation.
+
+\subsection{Reaction-type coverage is a separate axis}
+A model fine-tuned on single-molecule rearrangements can still degrade on
+bimolecular reactions even after composition extension.  Reaction-type
+coverage is independent of composition coverage, and the out-of-distribution
+check belongs to the release protocol rather than to the optional extras.
+
+\subsection{Accuracy is not uniform across system size}
+Report errors in size bins.  An aggregate mean hides systematically weak bins,
+and a potential that is good on average can be unusable for the size class
+that matters to a given study.
+
+\section{Measured record}
+\label{sec:al-record}
+
+On the development systems (C/H/N/O chemistry, ORCA L2 as the reference,
+barriers in kcal/mol):
+
+\begin{itemize}
+  \item the fine-tuned potential, on held-out reactions with
+        cross-composition training, reaches a barrier MAE of 2.92, against
+        6.93 for the strongest untuned foundation model on the same benchmark;
+  \item the committee disagreement tracks the true force error with a rank
+        correlation of 0.847 at calibration, and the fallback trigger fires
+        preferentially in transition-state regions, where the disagreement
+        rises by several times over its equilibrium value; this second number
+        belongs to the uncertainty layer, described in the companion chapter
+        on uncertainty quantification.
+\end{itemize}
+
+\begin{readbox}[How to read these numbers]
+They characterise the protocol on the tested systems; they are not
+transferable accuracy guarantees for other chemistries.  Reproduce them on
+your own reference set before quoting them for a new system, and quote the
+error decomposition alongside the aggregate.
+\end{readbox}

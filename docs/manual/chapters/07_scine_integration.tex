@@ -1,0 +1,388 @@
+\chapter{SCINE Integration}
+\label{ch:scine-integration}
+
+SCINE Chemoton explores a chemical reaction network in cycles of
+elementary-step proposals and refinements, and the daemon SCINE Puffin
+executes the individual jobs \cite{unsleber2022chemoton,weymuth2024scine,bensberg2025puffin}.
+Neither program accepts a calculator object: every job resolves its calculator
+from the \code{method_family} string of the database model, at a single point
+in \file{scine_puffin/utilities/scine_helper.py}.  That single point is what
+\jns{} intercepts.  This chapter describes the calculator bridge that lets an
+ASE calculator answer SCINE's \code{Calculator} interface
+(Section~\ref{sec:bridge}), the process-level patch that routes the declared
+method families to it (Section~\ref{sec:injection}), the readuct-level route
+kept for comparison (Section~\ref{sec:readuct-patch}), and the deployment and
+verification procedure (Section~\ref{sec:scine-verify}).
+
+\section{Why a bridge is needed}
+\label{sec:why-bridge}
+
+Puffin's \code{SettingsManager.prepare_readuct_task} is the only place where
+a readuct-type job turns a method name into a calculator:
+
+\begin{excerpt}
+scine_puffin/utilities/scine_helper.py
+    SettingsManager.prepare_readuct_task(...)
+        system = utilities.core.load_system_into_calculator(
+            "system.xyz", model.method_family, **calculator_settings)
+\end{excerpt}
+
+The engine never sees a calculator; it sees a string.  The same constructor
+path also calls \code{get_available_settings(method_family, program)} (the
+C++ side answers this call with \code{getCalculator(...)->settings()}), so
+leaving that function unpatched makes \code{SettingsManager} fail at
+construction, before any calculation can run.
+
+\jns{} supplies two building blocks for this point: the bridge
+(\code{jnuscout.scine.bridge.ASECalculatorBridge}), a Python subclass of the
+SCINE \code{Calculator} base class that wraps any ASE calculator, and the
+injection patch (\code{jnuscout.scine.puffin_patch}), which replaces the
+resolution functions in-process.
+
+\section{The calculator bridge}
+\label{sec:bridge}
+
+\subsection{The interface contract}
+
+A Python calculator in SCINE Core is driven through double dispatch: public
+methods of the C++ base class call back into \code{_xxx_impl} methods on the
+Python subclass, and a missing override aborts with
+
+\begin{transcript}
+Missing overload of '_xxx_impl' in Python Calculator derivative.
+\end{transcript}
+
+\code{ASECalculatorBridge} implements all sixteen of them
+(Table~\ref{tab:bridge-impl}).
+
+\begin{table}[htbp]
+\centering
+\caption{The sixteen \code{_*_impl} methods of the SCINE Calculator
+contract, in the order of the dispatch list in
+\file{src/jnuscout/scine/bridge.py}.}
+\label{tab:bridge-impl}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+Method & Role \\
+\midrule
+\code{_calculate_impl} & runs the ASE backend, writes the results object and returns it \\
+\code{_clone_impl} & builds a fully isolated copy (settings and structure) \\
+\code{_results_impl} & returns the results object; the C++ side keeps the reference \\
+\code{_get_structure_impl} & returns the \code{AtomCollection} \\
+\code{_set_structure_impl} & stores an \code{AtomCollection} \\
+\code{_get_positions_impl} & returns the structure positions \\
+\code{_modify_positions_impl} & writes positions into the structure \\
+\code{_settings_impl} & returns the descriptor-carrying \code{Settings} object \\
+\code{_set_required_properties_impl} & stores the required-property list \\
+\code{_get_required_properties_impl} & returns the required-property list \\
+\code{_possible_properties_impl} & declares the property superset the bridge provides \\
+\code{_supports_method_family_impl} & accepts every method family \\
+\code{_get_state_impl} & returns an empty SCINE state \\
+\code{_load_state_impl} & accepts a state without storing it \\
+\code{_name_impl} & returns the calculator name (diagnostic) \\
+\code{_allows_python_gil_release_impl} & returns \code{False}: ASE and torch callbacks need the GIL \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+All quantities cross the boundary in SCINE's atomic units (Hartree, Bohr),
+while the ASE side uses eV and \AA, so the bridge converts on both axes:
+
+\begin{equation}
+  E[\mathrm{E_h}] = \frac{E[\mathrm{eV}]}{27.211386245}, \qquad
+  g[\mathrm{E_h}/\mathrm{bohr}] = -\,\frac{F[\mathrm{eV}/\text{\AA}]}
+      {1.8897259886 \times 27.211386245}.
+  \label{eq:bridge-units}
+\end{equation}
+
+Note the sign convention in the second relation: a force is the negative
+gradient.
+
+\subsection{Return the results object}
+\label{sec:contract-return}
+
+The C++ trampoline for \code{calculate} is declared as
+
+\begin{excerpt}
+PYBIND11_OVERRIDE_PURE_NAME(const Scine::Utils::Results&, Scine::Core::Calculator,
+                            "_calculate_impl", calculate, description)
+\end{excerpt}
+
+so the value returned by \code{_calculate_impl} must convert to a
+\code{const Results\&}.  Returning \code{None} makes the pybind11 conversion
+raise a \code{TypeError}; \code{CalculationRoutines::calculateWithCatch}
+swallows any exception with \code{catch (...)}, prints only
+
+\begin{transcript}
+Aborting optimization due to failed calculation
+\end{transcript}
+
+and rethrows.  The observable symptom is a geometry optimisation that stops
+after a single evaluation, with a message that points nowhere near the cause.
+The bridge therefore ends \code{_calculate_impl} with \code{return r}, and
+sets \code{successful_calculation} as the last write to the object, because
+the C++ side uses that flag to decide whether the step succeeded.
+
+\subsection{Update the results object in place}
+\label{sec:contract-inplace}
+
+readuct reads the results object through \code{_results_impl} before the
+calculation and keeps the reference (three reads ahead of a single-point
+task).  Re-assigning \code{self._results = su.Results()} inside
+\code{_calculate_impl} leaves the held reference pointing at an object whose
+\code{successful_calculation} is never set, with the same external symptom as
+above.  The bridge writes the fields of the existing object instead of
+replacing it.
+
+\subsection{Clones must be fully isolated}
+\label{sec:contract-clone}
+
+readuct clones the calculator during argument handling and runs the
+calculation on the clone.  Puffin additionally derives spin-shifted systems by
+cloning a calculator and writing a new multiplicity into the clone:
+
+\begin{excerpt}
+shifted = systems[name].clone()
+shifted.settings["spin_multiplicity"] = <shifted multiplicity>
+\end{excerpt}
+
+The propensity iterator is lazy and re-reads the multiplicity of the original
+object on every round, so a clone that shares the settings object pollutes the
+original with the last written shift value, and the job fails with
+
+\begin{transcript}
+Could not find system nt_multiplicity_shift_-2
+\end{transcript}
+
+The bridge therefore builds a fresh descriptor-carrying \code{Settings} object
+on clone and copies keys one by one, and it rebuilds the structure as a new
+\code{AtomCollection} from elements and positions.  Sharing the structure
+would make \code{_modify_positions_impl} on the clone move the original
+geometry as well, because the optimiser operates on clones throughout.
+
+\subsection{A declared superset of properties and settings}
+\label{sec:superset}
+
+The engine fails the whole job when it requires a property the calculator did
+not declare, so the bridge over-declares.  \code{_possible_properties_impl}
+declares energy, gradients, atomic charges, the bond-order matrix and the
+Hessian.  The error messages that motivated the additions are
+
+\begin{transcript}
+Charges required, but chosen calculator does not provide them
+Bond orders required, but chosen calculator does not provide them
+Calculator is missing a Hessian property
+\end{transcript}
+
+Each declared property is produced when it is requested:
+
+\begin{itemize}
+  \item energy and gradients come from the ASE backend, converted as in
+        equation~\eqref{eq:bridge-units};
+  \item atomic charges are a placeholder of zeros: the MACE and AIMNet2
+        backends do not expose charges, and reactive-site detection in the
+        AFIR search relies mainly on bonding topology;
+  \item bond orders are detected on the SCINE-unit structure with SCINE's own
+        distance criterion (\code{su.BondDetector.detect_bonds}); the
+        behaviour is controlled by \code{NNP_AFIR_BOND_ORDERS} (on by
+        default);
+  \item the Hessian is computed by central differences of the analytic
+        gradients with a step of $1\times10^{-2}$~Bohr, which makes the unit
+        naturally $\mathrm{E_h}/\mathrm{bohr}^2$; the cost is two gradient
+        evaluations per Cartesian coordinate ($6N$ for $N$ atoms), and it is
+        only evaluated when the required-property list contains it.
+\end{itemize}
+
+The same reasoning applies to settings.  An empty descriptor collection makes
+readuct abort while writing \code{self_consistence_criterion} inside
+optimisation or scan tasks,
+
+\begin{transcript}
+Setting 'self_consistence_criterion' not implemented in the applied calculator
+\end{transcript}
+
+and Puffin writes program-layout keys (\code{base_working_directory},
+\code{output_path}, \dots) that the official C++ calculators declare
+themselves; an undeclared key surfaces as
+
+\begin{transcript}
+There is no matching key 'X' in these Settings!
+\end{transcript}
+
+\code{bridge_descriptors()} therefore declares the full standard key set for
+the bridge (27 keys).  Unknown keys that the engine still sends are skipped
+and counted by the patch rather than rejected; with
+\code{NNP_AFIR_PUFFIN_VERBOSE=1} the skipped keys are printed.  The
+asymmetry is deliberate: over-declaring costs nothing, under-declaring fails
+the job before it starts.
+
+\begin{refusalbox}[What the bridge does not provide]
+The bridge is an adapter, not a model.  It does not compute atomic charges
+(the charge field is a placeholder), it does not persist calculator state
+(\code{_get_state_impl} returns an empty state and \code{_load_state_impl}
+stores nothing), and it does not release the GIL during a calculation.  It
+also does not judge: whether a prediction is trustworthy is decided by the
+uncertainty layer, not here.
+\end{refusalbox}
+
+\section{Injection into Puffin and readuct}
+\label{sec:injection}
+
+\subsection{The patch}
+\label{sec:patch}
+
+\code{puffin_patch.install_from_env()} replaces the calculator-resolution
+functions on \code{scine_utilities.core} for the declared method families:
+
+\begin{itemize}
+  \item \code{load_system_into_calculator} returns a bridge whose structure
+        is the system the engine passed in.  An \code{AtomCollection} is used
+        as-is with no unit conversion (SCINE works in Bohr throughout); a file
+        path is read from disk and converted to Bohr;
+  \item \code{get_available_settings} returns a descriptor-carrying
+        \code{Settings} object equivalent to \code{getCalculator(...)->settings()};
+  \item \code{has_calculator} and \code{get_calculator} answer the companion
+        queries for the same families.
+\end{itemize}
+
+Every other method family falls back to the original function, so
+Sparrow/DFTB3, PM6 and DFT jobs keep working unchanged.  One calling
+convention needs care: \code{SettingsManager.calculator_settings} itself
+contains a \code{method_family} key, so the engine calls
+
+\begin{excerpt}
+load_system_into_calculator(xyz, method_family, **settings)
+\end{excerpt}
+
+with the family both positionally and as a keyword.  The wrapper accepts this
+leniently and de-duplicates; a strict signature would fail on the first job.
+
+\subsection{Environment variables}
+\label{sec:scine-env}
+
+\begin{table}[htbp]
+\centering
+\caption{Environment variables of the injection patch.  The names are kept
+from earlier deployments and are part of the interface.}
+\label{tab:scine-env}
+\begin{tabularx}{\textwidth}{@{}lXl@{}}
+\toprule
+Variable & Meaning & Default \\
+\midrule
+\code{NNP_AFIR_PUFFIN} & enable the patch (called from \code{sitecustomize.py}) & off \\
+\code{NNP_AFIR_METHOD_FAMILY} & family, or comma-separated families, to intercept & \code{nnp} \\
+\code{NNP_AFIR_BACKEND} & \code{emt}, \code{mace} or \code{aimnet2} & \code{mace} \\
+\code{NNP_AFIR_MODEL} & path to the MACE model file & unset \\
+\code{NNP_AFIR_DEVICE} & torch device for MACE & \code{cuda} \\
+\code{NNP_AFIR_BOND_ORDERS} & attach the bond-order matrix to the results & on \\
+\code{NNP_AFIR_PUFFIN_VERBOSE} & print hit messages and skipped settings & off \\
+\code{NNP_AFIR_BRIDGE_VERBOSE} & print bridge-level diagnostics & off \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The \code{emt} backend builds an ASE EMT calculator: it needs no model weights
+and no torch, which makes it the lightest end-to-end smoke test of the
+plumbing.  The \code{aimnet2} backend is not wired up yet; selecting it raises
+\code{NotImplementedError}.  For production use, point
+\code{NNP_AFIR_MODEL} at a fine-tuned MACE model.
+
+\subsection{Deployment: activate before Puffin starts}
+\label{sec:scine-deploy}
+
+The patch must be installed in every process that may execute a job, including
+forked workers, and before Puffin's main routine starts.  The supported
+mechanism is a \code{sitecustomize.py} on \code{PYTHONPATH}: Python imports it
+automatically at interpreter start-up, so the daemon and everything it forks
+inherit the patch.
+
+\begin{codeblock}
+# sitecustomize.py -- lives in a directory placed on PYTHONPATH
+import jnuscout.scine as scine
+
+scine.install_from_env()
+\end{codeblock}
+
+\begin{transcript}
+$ export PYTHONPATH=/opt/jnu-scout/src:/opt/jnu-scout-deploy
+$ export NNP_AFIR_PUFFIN=1
+$ export NNP_AFIR_METHOD_FAMILY=nnp
+$ export NNP_AFIR_BACKEND=mace
+$ export NNP_AFIR_MODEL=/opt/models/mace_al_v3f.model
+$ puffin start -c puffin.yaml
+\end{transcript}
+
+The installation is idempotent, and \code{scine.uninstall()} restores the
+original functions.  \code{install_from_env()} is a no-op unless
+\code{NNP_AFIR_PUFFIN} is set to a non-empty, non-zero value.
+
+\section{The readuct-level patch (kept for comparison)}
+\label{sec:readuct-patch}
+
+\code{jnuscout.scine.readuct_patch} predates the full bridge and takes a
+different route.  It wraps every \code{readuct.run_*_task} function, captures
+the calculator clones that readuct makes during argument handling, and, when a
+task raises the specific return-value conversion \code{TypeError}
+(\code{incompatible function arguments}) after a successful calculation,
+rebuilds the returned dictionary from the captured clone.
+\code{install_puffin_patch(bridge_cls, factory, sentinel="nnp")} additionally
+replaces \code{ScineHelper.prepare_readuct_task} for the sentinel method
+family.
+
+This module is a workaround for a binding defect, not a fix, and it is kept in
+the package for comparison only:
+
+\begin{itemize}
+  \item it matches one specific \code{TypeError} string and applies only to
+        task functions that return a calculator dictionary;
+  \item if a task fails for a different reason, no clone is captured and the
+        wrapper re-raises; set \code{NNP_PATCH_VERBOSE=1} to print a notice
+        whenever it does bypass a conversion.
+\end{itemize}
+
+\begin{notebox}[Recommended route]
+Use \code{puffin_patch.install_from_env()}.  With the interface contract of
+Section~\ref{sec:bridge} satisfied, the calculation path needs no return-value
+workaround; \code{readuct_patch} exists to document and reproduce the
+earlier failure mode.
+\end{notebox}
+
+A third, factory-level variant lives in \code{jnuscout.scine.inject}
+(\code{apply_patch()}).  It routes the families \code{("DFT", "GFN2-xTB")} to
+\code{ScineORCACalculator}, which implements only five of the sixteen
+\code{_*_impl} methods and has no \code{_clone_impl}; that chain is
+incomplete by itself and is kept for comparison as well.
+
+\section{Verifying the integration}
+\label{sec:scine-verify}
+
+A minimal check exercises the whole path -- database model, Puffin job
+resolution, bridge, backend -- with the lightest possible backend:
+
+\begin{enumerate}
+  \item start MongoDB and Puffin with the patch active and with
+        \code{NNP_AFIR_BACKEND=emt};
+  \item build a small database whose model carries
+        \code{method_family='nnp'} and submit one exploration cycle;
+        \script{setup_h2co_nnp_db} does exactly this for the H$_2$CO test
+        system;
+  \item inspect the job status in the database.
+\end{enumerate}
+
+\begin{readbox}[How to read the result]
+A job that reaches \code{Status.COMPLETE} has executed the calculation and the
+job's post-processing (structure and energy bookkeeping, bond orders, graph
+updates) without the bridge raising.  If a job fails instead, re-run with
+\code{NNP_AFIR_PUFFIN_VERBOSE=1} and \code{NNP_AFIR_BRIDGE_VERBOSE=1}:
+the first prints which resolution calls hit the patch, the second prints
+bridge-level diagnostics.  The message ``Aborting optimization due to failed
+calculation'' is generic by construction -- it means only that
+\code{calculate()} raised.  Check the return-value contract of
+Section~\ref{sec:contract-return} first.
+\end{readbox}
+
+Two silent failure modes are worth remembering on a new deployment: a job that
+never starts is often a missing settings descriptor, because the engine
+rejects an unknown key before the first calculation; a job that stops after a
+single evaluation is usually a violated return-value or in-place-results
+contract.

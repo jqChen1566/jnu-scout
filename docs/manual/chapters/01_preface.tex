@@ -1,0 +1,80 @@
+\chapter{Preface}
+
+\jns{} is a framework for automated reaction-path search.  It drives an
+open-source reaction-network engine (SCINE Chemoton and Puffin, from the
+Reiher group) with machine-learning potentials (MACE and AIMNet2), and it
+keeps track of how much the potentials can be trusted: a committee of models
+from different architecture families measures its own disagreement on every
+geometry, and predictions beyond a calibrated uncertainty threshold are
+handed back to a higher-level quantum-chemistry program (ORCA).
+
+This manual documents version 0.1.0.  It is written for two kinds of
+readers: users who want to run explorations with \jns{} (Chapters
+\ref{ch:installation}--\ref{ch:configuration}), and developers who want to
+extend or integrate it (Chapters \ref{ch:architecture} onward, and the
+appendices).
+
+\section*{How to read this manual}
+
+\begin{readbox}[How to read this manual]
+\begin{itemize}
+  \item If you have never run \jns{}: start with Chapter
+    \ref{ch:installation} (installation) and Chapter
+    \ref{ch:getting-started} (first five minutes).  The calibration example
+    in Chapter \ref{ch:getting-started} runs with nothing but NumPy.
+  \item If you want to put the NNP into a running exploration: Chapter
+    \ref{ch:scine-integration} describes the bridge contract and the
+    injection patches, including the exact deployment steps.
+  \item If you want to understand (or audit) the uncertainty machinery:
+    Chapter \ref{ch:uncertainty} defines the disagreement measures and the
+    calibration protocol in full.
+  \item Reference material -- calculators, scripts, configuration fields,
+    constants, environment variables -- lives in Chapters
+    \ref{ch:calculators}, \ref{ch:scripts}, \ref{ch:configuration} and
+    Appendices \ref{app:constants}--\ref{app:glossary}.
+\end{itemize}
+\end{readbox}
+
+\section*{Conventions}
+
+\begin{itemize}
+  \item Energies and forces follow the ASE convention throughout: energies
+    in electronvolts (eV), forces in eV/\AA{}; reaction barriers are quoted
+    in kcal/mol where they come from the benchmark protocols.
+  \item Atomic units (Hartree, Bohr) appear only where a program's native
+    output uses them; the conversion constants are collected in Appendix
+    \ref{app:constants}.
+  \item \code{monospace} marks code, file names and identifiers;
+    \texttt{transcript} blocks show terminal sessions and
+    \texttt{codeblock} blocks show code.
+  \item The product name is written \jns{}; the Python package is
+    \code{jnuscout}, the repository is
+    \code{github.com/jqChen1566/jnu-scout}.
+\end{itemize}
+
+\section*{Authors, funding and citation}
+
+\begin{readbox}[Authors and funding]
+\jns{} is developed by Jianqi Chen, Zhuoran Zhang and Laiyu Zhang (College
+of Chemistry and Materials Science, Jinan University, Guangzhou, China),
+Mingyu Chen (Information Hub, The Hong Kong University of Science and
+Technology (Guangzhou), China) and Ruiqian Luo (School of Chemistry,
+Sun Yat-sen University, Guangzhou, China), under the supervision of
+Prof.\ Juan Li (Jinan University).
+
+The project is supported by the Jinan University Provincial College
+Students' Innovation and Entrepreneurship Training Program
+(Project No.\ S202610559049).
+\end{readbox}
+
+If you use \jns{} in academic work, please cite it as described in the
+\file{CITATION.cff} file of the repository; the same information appears in
+the README.
+
+\section*{License}
+
+\jns{} is distributed under the Apache License 2.0 (see \file{LICENSE} and
+\file{NOTICE}).  It builds on external open-source and academic software --
+SCINE, MACE, AIMNet2, ASE, the ORCA program and the xtb executable -- none
+of which is bundled with this distribution; each remains under its own
+license and must be installed separately.

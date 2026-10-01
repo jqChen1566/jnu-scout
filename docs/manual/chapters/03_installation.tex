@@ -1,0 +1,186 @@
+\chapter{Installation}
+\label{ch:installation}
+
+\jns{} is a pure-Python package that drives external programs; it bundles
+none of them.  The core installation needs only \file{ase} and \file{numpy}
+and already covers the calculators, the uncertainty-quantification
+mathematics and the calibration tools.  The deep-learning stack and the
+SCINE engine integration are optional extras, so an installation that only
+needs an ORCA or xTB calculator does not have to carry them.
+
+\section{Requirements}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{3.4cm}
+    >{\raggedright\arraybackslash}p{3.9cm} X@{}}
+    \toprule
+    Component & Form & Needed for \\
+    \midrule
+    Python & $\ge$ 3.11 & everything \\
+    \file{ase} $\ge$ 3.22, \file{numpy} $\ge$ 1.24 & installed with the core & all calculators, the UQ module \\
+    \file{xtb} & external executable, optional & L1 pre-screening (\code{XTBCalculator}) \\
+    ORCA & external program, version 6.x, academic license & L2/L3, fallback of the safe calculator \\
+    \file{torch}, \file{mace-torch}, \file{aimnet2} & \code{[nnp]} extra & NNP committee, \code{SafeNNPCalculator} \\
+    \file{scine-utilities}, \file{scine-chemoton}, \file{scine-database}, \file{scine-puffin} & \code{[scine]} extra & Chemoton/Puffin integration \\
+    MongoDB & running server & Chemoton database layer \\
+    \file{pytest} $\ge$ 7 & \code{[dev]} extra & running the test suite \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Requirements by usage.  The first two rows are sufficient for the
+  calibration workflow of path~1 in Chapter~\ref{ch:getting-started}.}
+\end{table}
+
+\section{Installing the package}
+
+\begin{codeblock}
+pip install jnuscout                  # core: calculators (ORCA/xtb), UQ maths
+pip install "jnuscout[nnp]"           # + torch, mace-torch, aimnet2
+pip install "jnuscout[scine]"         # + scine-utilities/chemoton/puffin/database
+pip install "jnuscout[dev]"           # + pytest
+\end{codeblock}
+
+Extras can be combined, for example \code{pip install "jnuscout[nnp,scine]"}.
+Quoting matters in shells that expand brackets (\file{zsh} and some
+\file{bash} configurations); the quotes above are not optional there.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}l X@{}}
+    \toprule
+    Extra & Adds \\
+    \midrule
+    (core) & \file{ase} $\ge$ 3.22, \file{numpy} $\ge$ 1.24 \\
+    \code{[nnp]} & \file{torch} $\ge$ 2.0, \file{mace-torch}, \file{aimnet2} \\
+    \code{[scine]} & \file{scine-utilities}, \file{scine-chemoton}, \file{scine-database}, \file{scine-puffin} \\
+    \code{[dev]} & \file{pytest} $\ge$ 7 \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Dependency extras defined in \file{pyproject.toml}.}
+\end{table}
+
+\section{External programs}
+
+\subsection{ORCA (L2, L3 and the fallback)}
+
+Levels L2 and L3, and every fallback of the safe calculator, are single
+ORCA runs.  \jns{} neither bundles nor downloads ORCA: obtain version 6.x
+from the developers under an academic license and make the executable
+available either on \code{PATH} or through the \code{ORCA_BIN} environment
+variable (default: \file{orca}).  The constructor keyword \code{orca_bin=}
+overrides both for one calculator instance.
+
+Two resource settings are forwarded to every ORCA input: \code{nprocs} and
+\code{maxcore} (memory in MB per core), written as the directives
+\%\code{pal nprocs} and \%\code{maxcore}.  Their defaults are 8 and 4000.
+
+ORCA is started in an adjusted process environment.  The calculator prepends
+the ORCA directory, the directories listed in \code{ORCA_EXTRA_LIB_DIRS}
+(colon-separated) and the common OpenMPI library locations
+(\file{/usr/local/openmpi-4.1.8/lib}, \file{/usr/lib64/openmpi/lib},
+\file{/usr/lib/x86_64-linux-gnu/openmpi/lib}) to \code{LD_LIBRARY_PATH},
+and the corresponding \file{bin} directories plus
+\code{ORCA_EXTRA_BIN_DIRS} to \code{PATH} so that \file{mpirun} can be
+resolved.
+
+\begin{notebox}[ORCA exits without writing a file]
+If ORCA terminates with return code 0 but produces no \file{.engrad} file,
+the cause is usually the launcher environment rather than the calculation.
+A non-interactive shell (cron, \file{systemd-run}) does not read
+\file{.bashrc}, so the library path a login shell would have set is missing
+and the binary cannot load \file{liborca} or \file{libmpi}.  If your OpenMPI
+installation lives elsewhere, set \code{ORCA_EXTRA_LIB_DIRS} and
+\code{ORCA_EXTRA_BIN_DIRS} to its library and binary directories.
+\end{notebox}
+
+\subsection{xTB (L1, optional)}
+
+L1 pre-screening uses the \code{xtb} command-line program and is optional:
+the package works without it as long as no L1 calculation is requested.
+Point \code{XTB_BIN} (default \file{xtb}) at the executable, or pass
+\code{xtb_bin=} to the calculator.  Any build exposing the standard command
+line (\code{--gfn}, \code{--chrg}, \code{--uhf}, \code{--grad}) is usable;
+the conda-forge build compiled with gfortran is the one tested.  The wrapper
+exists because ASE 3.29 ships no built-in xTB interface and the SCINE xTB
+module was not usable on the deployment host (it requires an AVX-512 capable
+CPU, and its ABI conflicted with the installed SCINE release).
+
+\section{Model weights and offline operation}
+
+The committee (Chapter~\ref{ch:calculators}) has three members, loaded
+lazily on first use.  Their identifiers are read from the environment:
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\linewidth}{@{}l l X@{}}
+    \toprule
+    Member & Variable & Default \\
+    \midrule
+    MACE-MP-0 & \code{MACE_MP0_PATH} & \file{medium} (resolved and, if absent, downloaded by \file{mace-torch}) \\
+    MACE-MPA-0 & \code{MACE_MPA0_PATH} & \url{~/.cache/mace/mace-mpa-0-medium.model} \\
+    AIMNet2-b973c & --- & selected by model identifier \file{aimnet2_b973c}; no path variable in this version \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Weight resolution for the default committee members.}
+\end{table}
+
+\begin{notebox}[Offline machines]
+If the MACE weights are not cached locally, \file{mace-torch} attempts a
+download on first use, which fails (or stalls) without network access.  Point
+\code{MACE_MP0_PATH} and \code{MACE_MPA0_PATH} at local \file{.model}
+files instead; any path is accepted, not only the cache directory.
+Everything else in \jns{} runs locally: no structure ever leaves the machine.
+\end{notebox}
+
+\begin{notebox}[When environment variables are read]
+\code{ORCA_BIN} and \code{XTB_BIN} are read when
+\file{jnuscout.calculators.orca} and \file{jnuscout.calculators.xtb} are
+imported, and the MACE paths when
+\file{jnuscout.calculators.committee} is imported.  Set the variables before
+starting the interpreter, or use the per-calculator keywords
+(\code{orca_bin=}, \code{xtb_bin=}, \code{members=}), which take effect at
+any time.
+\end{notebox}
+
+\section{The SCINE engine and MongoDB}
+
+The \code{[scine]} extra installs the engine stack.  Chemoton keeps its
+reaction network in a MongoDB database, and the stock behaviour is to expect
+a running \file{mongod}; \jns{} does not change this.  The bridge and the
+injection patches were developed against Chemoton 4.1.0 with
+\file{scine_utilities} 10.1.0; other releases of the SCINE stack are not
+covered by the current test suite.  How the NNP is registered as a method
+family is described in Chapter~7.
+
+\section{Installing from source}
+
+\begin{codeblock}
+git clone https://github.com/jqChen1566/jnu-scout.git
+cd jnu-scout
+pip install -e ".[nnp]"
+bash scripts/verify.sh
+\end{codeblock}
+
+\file{scripts/verify.sh} runs the unified check used for releases: a syntax
+gate (\code{python -m compileall} over \file{src}, \file{scripts} and
+\file{tests}) followed by the test suite.  A source checkout has no compiled
+components; the package is Python only.
+
+\section{Checking the installation}
+
+The two commands below exercise the package without launching any external
+program (a calculator runs its backend only inside a calculation):
+
+\begin{transcript}
+$ python -c "import jnuscout; print(jnuscout.__version__)"
+0.1.0
+$ python -c "from jnuscout.calculators import CalculatorFactory; print(CalculatorFactory.create('L1').method)"
+GFN2-xTB
+\end{transcript}
+
+If the first command fails, the package is not on the import path of the
+interpreter you are using.  If the second fails while the first succeeds, the
+core dependencies are broken; reinstall the package.

@@ -148,6 +148,9 @@ axis; report errors by system size, not only in aggregate).
 
 ## Documentation
 
+- `docs/manual/` -- the full user manual (XeLaTeX source; build it with
+  `bash docs/manual/build.sh`).  The compiled PDF is attached to the
+  release page.
 - `docs/architecture.md` -- the three-layer design, the SCINE bridge
   contract and the injection patches;
 - `docs/method_chain.md` -- method chain, uncertainty definitions,

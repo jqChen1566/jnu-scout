@@ -25,3 +25,5 @@ Initial release.
   committee analysis.
 - Example configurations for H2CO isomerization and a bimolecular
   Diels-Alder exploration.
+- A complete user manual (XeLaTeX source under `docs/manual/`, compiled
+  PDF attached to the release).

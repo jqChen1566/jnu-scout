@@ -1,0 +1,318 @@
+\chapter{Utility Scripts}
+\label{ch:scripts}
+
+The \file{scripts/} directory holds stand-alone tools built on the
+\code{jnuscout} package: uncertainty calibration, active-learning data
+preparation, database hygiene, and structure checks.  The scripts that use
+the package embed a small \code{sys.path} bootstrap for the source layout, so
+they can be run directly from a source checkout:
+
+\begin{transcript}
+$ python scripts/<script>.py --help
+\end{transcript}
+
+The \code{--help} output of a script is its authoritative option list; this
+chapter gives the purpose, the dependencies, a canonical invocation and the
+output of every tool.  Scripts that talk to a SCINE database additionally
+need \code{pymongo} and the \code{[scine]} extra; scripts that label or
+validate with ORCA need an ORCA executable (\code{ORCA_BIN}); the RDKit
+structure check needs a second interpreter that has RDKit installed.
+Most tools write their output under \file{results/} or \file{data/}, and
+inputs are not modified; the exceptions are the two reporting tools
+(\script{analyze_committee} and \script{db_snapshot}), which print to the
+terminal, and the database tools, which write to the database they are
+pointed at (\code{setup_h2co_nnp_db --wipe} deletes it first).
+
+\begin{table}[htbp]
+\centering
+\caption{Overview of the utility scripts.  ``Needs'' lists the dependencies
+beyond the Python standard library.}
+\label{tab:scripts-overview}
+\begin{tabularx}{\textwidth}{@{}lXl@{}}
+\toprule
+Script & Purpose & Needs \\
+\midrule
+\script{calibrate_uq} & calibrate the fallback threshold and audit it & numpy, ORCA \\
+\script{build_al_trainset} & sample reaction paths, label frames with ORCA L2 & pymongo, SCINE database, ORCA \\
+\script{resplit_trainset} & composition-stratified, reaction-grouped re-split & --- \\
+\script{validate_finetune} & held-out barrier validation of a fine-tuned model & pymongo, MACE, ORCA \\
+\script{analyze_committee} & member and combination statistics on a barrier file & numpy \\
+\script{db_snapshot} & progress snapshot of the search databases & SCINE database \\
+\script{check_structure_identity} & independent RDKit cross-check of database structures & SCINE database, DFTB3, RDKit \\
+\script{eval_barrier_spline} & spline-endpoint barrier evaluation with ORCA caching & pymongo, SCINE database, ORCA \\
+\script{setup_h2co_nnp_db} & build and run the H$_2$CO test database with the NNP family & SCINE database, Puffin \\
+\script{verify_bohr_units} & known-answer check of the Bohr-to-Angstrom conversion & pymongo, ORCA \\
+\script{_rdkit_perceive} & perception helper for the identity check (not run directly) & RDKit \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{\texttt{calibrate\_uq}}
+\scriptlabel{calibrate_uq}
+
+Builds a reference set of small CHNO molecules plus random displacements,
+computes the committee prediction and disagreement and the ORCA L2 reference
+for every configuration, and calibrates the fallback threshold with
+\code{calibrate_threshold}: the low quantile of the disagreement among the
+configurations whose true error exceeds the danger threshold.  It also
+reports the rank correlation, the expected calibration error and a coverage
+scan, and prints the acceptance targets for the user to judge (rank
+correlation above 0.6, coverage above 80\%, fallback rate below 20\%).
+
+\begin{description}
+  \item[Dependencies] \code{numpy}; the NNP committee (the \code{[nnp]}
+        extra, including torch and the model weights); ORCA for the
+        reference calculations, unless \code{--no-orca} is given.
+  \item[Usage] \code{python scripts/calibrate_uq.py --n 60 --epsilon 0.10 --out results/uq_calib.json}
+  \item[Options] \code{--n} displaced configurations per molecule (5);
+        \code{--sigma} displacement width in \AA{} (0.05, near-equilibrium
+        thermal noise); \code{--epsilon} danger threshold as per-atom force
+        error (0.10); \code{--theta-quantile} (0.05); \code{--device}
+        (cuda); \code{--limit} to restrict a debug run; \\
+        \code{--calibrate-baselines} to align the per-member energy
+        baselines first; \code{--no-orca} to measure the committee alone,
+        which yields a disagreement distribution but no calibrated
+        threshold.
+  \item[Output] \file{results/uq_calib.json} with the summary (threshold,
+        rank correlation, expected calibration error, coverage statistics),
+        the per-configuration rows and the failures; the summary is also
+        printed.
+\end{description}
+
+\section{\texttt{build\_al\_trainset}}
+\scriptlabel{build_al_trainset}
+
+Pulls elementary steps from a SCINE database, samples configurations along
+each fitted path with \code{spline.evaluate(t)}, labels them with ORCA L2
+(r2SCAN-D4/def2-SVP) in parallel worker processes, and writes the frames for
+MACE fine-tuning in extended-xyz format, in eV and \AA.  Sampling is
+transition-state weighted by default.  \code{--holdout-es} reserves a number
+of elementary steps as the held-out set, split by step so that no path point
+leaks between the two sides.
+
+\begin{description}
+  \item[Dependencies] \code{numpy}, \code{pymongo}, the SCINE database, and
+        ORCA at level L2.
+  \item[Usage] \code{python scripts/build_al_trainset.py --db diels_alder --n-points 15 --workers 8 --out data/al_trainset.xyz}
+  \item[Options] \code{--db} (a database name, or several separated by
+        commas; default \code{diels_alder}); \code{--n-points} per
+        elementary step (15); \code{--max-es} upper bound on the steps
+        (40); \code{--workers} parallel labellers (8); \code{--out}
+        (\file{data/al_trainset.xyz}); \code{--holdout-es} number of steps
+        to reserve (0); \code{--holdout} to generate the held-out set
+        itself; \code{--uniform} for uniform instead of transition-state
+        weighted sampling.
+  \item[Output] one extxyz file; each frame carries the energy, the forces
+        and the bookkeeping fields (\code{es_id}, \code{t}).  Frames whose
+        reference calculation fails are skipped and counted.
+\end{description}
+
+\section{\texttt{resplit\_trainset}}
+\scriptlabel{resplit_trainset}
+
+Merges one or two existing frame files and re-splits them stratified by
+composition.  Within each composition the elementary steps are shuffled and
+divided 8:2, and all frames of one step go to the same side, so that
+consecutive geometries of a path never straddle the split.  It exists because
+an order-based split produced a training set entirely of C$_4$H$_6$ and a
+validation set entirely of C$_6$H$_{10}$.
+
+\begin{description}
+  \item[Dependencies] the Python standard library only.
+  \item[Usage] \code{python scripts/resplit_trainset.py --a data/al_train_da.xyz --b data/al_holdout_da.xyz --out-train data/al_train2.xyz --out-valid data/al_valid2.xyz}
+  \item[Options] \code{--a} the primary frame file; \code{--b} an optional
+        second file to merge in (duplicate geometries are dropped);
+        \code{--out-train} and \code{--out-valid} the output files;
+        \code{--valid-frac} (0.2); \code{--seed} (20260911).
+  \item[Output] two extxyz files, plus the per-composition frame and step
+        counts for both sides, so the composition balance can be checked
+        before training.
+\end{description}
+
+\section{\texttt{validate\_finetune}}
+\scriptlabel{validate_finetune}
+
+Evaluates a fine-tuned model against the foundation model and the ORCA L2
+reference on held-out elementary steps, and reports the barrier mean absolute
+error together with its bias decomposition.  The held-out steps are read from
+the \code{es_id} fields of the validation file, which guarantees that no path
+point of the training set is reused.
+
+\begin{description}
+  \item[Dependencies] \code{numpy}, \code{pymongo} (structure lookup in the
+        database), MACE (both the fine-tuned and the foundation model), and
+        ORCA.
+  \item[Usage] \code{python scripts/validate_finetune.py --valid data/al_valid2.xyz --finetuned models/mace_al_da.model --baseline <foundation.model> --db diels_alder --out results/finetune_eval.json}
+  \item[Options] \code{--valid} the validation frames; \code{--finetuned}
+        the fine-tuned checkpoint; \code{--baseline} the foundation
+        checkpoint, which is required; \code{--db}; \code{--device}
+        (cuda); \code{--out} (\file{results/finetune_eval.json}).
+  \item[Output] the JSON file (summary and rows) plus the printed summary:
+        barrier MAE and bias per model, and the per-reaction rows the
+        decomposition is built from.
+\end{description}
+
+\section{\texttt{analyze\_committee}}
+\scriptlabel{analyze_committee}
+
+Compares committee member combinations on a barrier file produced by the
+evaluation scripts.  For every single member and every equal-weight
+combination it reports the sample size, MAE, bias, RMSE, rank correlation and
+slope, so that the committee design can be judged on corrected-unit
+geometries instead of intuition.  Rows whose reference lies below a
+threshold are excluded, because barrierless or unphysical entries would
+distort the statistics.
+
+\begin{description}
+  \item[Dependencies] \code{numpy}.
+  \item[Usage] \code{python scripts/analyze_committee.py --in results/barrier_committee.json}
+  \item[Options] \code{--in} the input barrier file (default
+        \file{results/barrier_committee.json}); \code{--neg-thresh} drop
+        rows with an ORCA reference below this value (default $-1.0$
+        kcal/mol).
+  \item[Output] printed tables of the single-member and combination
+        statistics; no file is written.
+\end{description}
+
+\section{\texttt{db\_snapshot}}
+\scriptlabel{db_snapshot}
+
+Refreshes the summary numbers of the search databases.  For each database it
+prints the structure count, the elementary-step count, the size histogram of
+the structures and the reaction-type histogram of the elementary steps; this
+is the snapshot used for progress reporting.
+
+\begin{description}
+  \item[Dependencies] the SCINE database (a running MongoDB).
+  \item[Usage] \code{python scripts/db_snapshot.py --dbs diels_alder_nnp h2co_nnp}
+  \item[Options] \code{--dbs} one or more database names (defaults
+        \code{diels_alder_nnp} and \code{h2co_nnp}).
+  \item[Output] stdout.  Structures whose size cannot be read and steps
+        whose type cannot be classified are reported as counts, not silently
+        dropped.
+\end{description}
+
+\section{\texttt{check\_structure\_identity}}
+\scriptlabel{check_structure_identity}
+
+Independent-source cross-check of database structures.  For each sampled
+structure it writes an XYZ file, lets RDKit (in a separate interpreter)
+perceive connectivity and bond orders from the coordinates, regenerates a 3D
+reference from the resulting SMILES, relaxes that reference on the same DFTB3
+surface and compares the energies; a clearly positive difference means the
+library entry is not the lowest configuration of that molecule.  Statistics
+must be grouped by label: the default filter considers only structures that
+claim to be relaxed minima, because transition states should not sit at
+minima by definition, so a large difference there is expected rather than a
+defect.
+
+\begin{description}
+  \item[Dependencies] the SCINE database, DFTB3 (Sparrow) for the
+        relaxation, and RDKit in a separate interpreter.  Set
+        \code{JNUSCOUT_RDKIT_PY} to an interpreter that has RDKit
+        installed; the helper defaults to \script{_rdkit_perceive} next to
+        the script and can be overridden with \code{JNUSCOUT_RDKIT_HELPER}.
+  \item[Usage] \code{python scripts/check_structure_identity.py --db diels_alder --label minima --sample 60}
+  \item[Options] \code{--db}; \code{--id} to check a single entry;
+        \code{--sample} (40); \code{--flag} the flagging threshold in
+        kcal/mol (5.0); \code{--label} one of \code{minima}, \code{guess},
+        \code{saddle}, \code{all} (default \code{minima}); \code{--size}
+        atom-count filter; \code{--group} for grouped statistics;
+        \code{--out} (\file{results/identity_check.json}).
+  \item[Output] the JSON file (parameters, exclusion reasons, rows) and the
+        printed summary.  Trusted counts and exclusion reasons are reported
+        together, because a percentage without them is misleading.
+\end{description}
+
+\section{\texttt{eval\_barrier\_spline}}
+\scriptlabel{eval_barrier_spline}
+
+Barrier evaluation by the spline-endpoint method: the reactant is
+\code{spline.evaluate(0)} and the transition state is
+\code{spline.evaluate(ts_position)}, so the reference and every model see
+exactly the same two geometries.  This is the correct protocol for
+bimolecular elementary steps, where a path cannot be assembled by
+concatenating the reactant fragments.  Several models can be evaluated in one
+run, and ORCA results are cached across runs.
+
+\begin{description}
+  \item[Dependencies] \code{numpy}, \code{pymongo}, the SCINE database,
+        ORCA, and the MACE models to compare.
+  \item[Usage] \code{python scripts/eval_barrier_spline.py --es-file data/holdout_bi.json --model v3f=models/mace_al_v3f.model --out results/barrier_bi.json}
+  \item[Options] \code{--es-file} (required: a specification with the
+        database name and the elementary-step ids); \code{--db} to override
+        the database; \code{--model name=path} (repeatable);
+        \code{--device} (cuda); \code{--workers} (12); \code{--orca-cache}
+        (\file{results/barrier_spline_orca_cache.json}); \code{--out}
+        (\file{results/barrier_spline.json}).
+  \item[Output] the barrier JSON (summary and rows) and the ORCA cache; the
+        cache-hits and the number of ORCA evaluations are printed, so a
+        resumed run is visibly cheaper.
+\end{description}
+
+\section{\texttt{setup\_h2co\_nnp\_db}}
+\scriptlabel{setup_h2co_nnp_db}
+
+Builds a Chemoton database whose model carries \code{method_family='nnp'},
+following the H$_2$CO assembly (the same gears and the same AFIR job as the
+reference setup), and optionally submits one exploration cycle.  The
+coordinates are defined in Angstrom and converted to Bohr before insertion,
+because the database stores structures in atomic units.  Puffin, with the NNP
+patch enabled, must already be running (Chapter~\ref{ch:scine-integration}).
+
+\begin{description}
+  \item[Dependencies] \code{numpy}, the SCINE database and utilities, a
+        running MongoDB, and a patched Puffin daemon.
+  \item[Usage] \code{python scripts/setup_h2co_nnp_db.py --run}
+  \item[Options] \code{--run} to run one cycle after assembly; \code{--wipe}
+        to wipe the database first; \code{--only-run} to skip the insertion
+        and run the gears for \code{--loops} rounds; \code{--loops} (1);
+        \code{--db} (\code{h2co_nnp}).
+  \item[Output] the database contents and, with \code{--run}, one submitted
+        exploration cycle.  Housekeeping needs several gear rounds before
+        compounds appear, which is what \code{--loops} is for.
+\end{description}
+
+\section{\texttt{verify\_bohr\_units}}
+\scriptlabel{verify_bohr_units}
+
+Checks that geometries read from the search database are converted from Bohr
+to Angstrom correctly.  The script evaluates the same elementary step under
+both conventions and quantifies the effect on the ORCA barrier, and it
+performs a known-answer self-check: the nearest-neighbour distance of an
+n=6 reactant must come out as a normal C--H bond length, not a broken-bond
+distance.  This is the reproduction tool for the unit defect that once
+stretched every geometry by a factor of 1.8897.
+
+\begin{description}
+  \item[Dependencies] \code{numpy}, \code{pymongo}, and ORCA.
+  \item[Usage] \code{python scripts/verify_bohr_units.py --es <es-id> --out results/bohr_unit_check.json}
+  \item[Options] \code{--db} (\code{diels_alder}); \code{--es} (required:
+        the 12-character elementary-step id prefix); \code{--model} an
+        optional extra model to evaluate; \code{--out}
+        (\file{results/bohr_unit_check.json}).
+  \item[Output] the JSON file with both barrier values and the distance
+        check; the two barriers should differ by much more than chemical
+        accuracy when the conversion is wrong, which is the whole point.
+\end{description}
+
+\section{\texttt{\_rdkit\_perceive}}
+\scriptlabel{_rdkit_perceive}
+
+Internal helper for \script{check_structure_identity}; it is not meant to be
+run directly.  It perceives connectivity and bond orders from 3D coordinates
+with RDKit's \code{rdDetermineBonds}, writes the canonical SMILES, and
+regenerates a 3D reference structure from it.  Charged fragments are
+disabled, so open-shell structures are represented with radical electrons
+instead of fragment ions, which is the correct choice for the neutral systems
+the check targets.
+
+\begin{description}
+  \item[Dependencies] RDKit, in the interpreter selected by the caller.
+  \item[Usage] \code{<rdkit-python> _rdkit_perceive.py <in.xyz> <out_prefix>}
+  \item[Output] \code{<out_prefix>.smi} (the SMILES; the first stdout line
+        carries the same text), \code{<out_prefix>.xyz} (the regenerated
+        structure), and a diagnostics line on stderr reporting formal
+        charges, radical electrons and the fragment count, so the caller can
+        judge whether the perception is trustworthy.
+\end{description}
