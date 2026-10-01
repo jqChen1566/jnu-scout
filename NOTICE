@@ -1,0 +1,21 @@
+JNUScout
+Copyright 2026 The JNUScout developers (Jianqi Chen, Juan Li)
+
+Developed at the College of Chemistry and Materials Science,
+Jinan University, Guangzhou, China.
+
+Third-party components
+----------------------
+JNUScout builds on external open-source and academic software.  None of the
+components below are bundled with this distribution; each remains under its
+own license and must be installed separately:
+
+- SCINE (Chemoton, Puffin, ReaDuct, scine_utilities, scine_database)
+  https://scine.ethz.ch/
+- MACE (mace-torch)                     https://github.com/ACEsuit/mace
+- AIMNet2                               https://github.com/isayevlab/aimnet2
+- Atomic Simulation Environment (ASE)   https://ase-lib.org/
+- ORCA quantum chemistry program        (external, academic license)
+- xtb / GFN2-xTB                        (external executable)
+
+The full text of the Apache License 2.0 is in the LICENSE file.

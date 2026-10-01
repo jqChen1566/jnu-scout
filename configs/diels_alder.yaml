@@ -1,0 +1,87 @@
+# JNUScout -- Diels-Alder (butadiene + ethylene) exploration configuration
+project:
+  name: "diels_alder"
+  description: "JNUScout exploration of Diels-Alder (butadiene + ethylene)"
+  working_dir: "./runs/diels_alder_001"
+
+system:
+  reactants:
+    - file: "./structures/butadiene.xyz"
+      charge: 0
+      multiplicity: 1
+    - file: "./structures/ethylene.xyz"
+      charge: 0
+      multiplicity: 1
+  temperature: 400.0  # K
+
+afir:
+  method: "mc-afir"     # multi-component AFIR for bimolecular reactions
+  gamma: 200.0          # kJ/mol
+  t_reaction: 86400     # 24 h
+  max_paths_per_eq: 500
+  pre_screen_steps: 10
+
+dft:                    # L2 geometry optimization + frequencies
+  program: "orca"
+  functional: "r2SCAN-D4"
+  basis: "def2-SVP"
+  aux_basis: "def2/J"
+  acceleration: "RIJCOSX"  # ORCA silently downgrades RIJCOSX to Split-RI-J for pure mGGAs
+                           # (the warning is harmless); there is no "RI-J" keyword
+  grid: "defgrid3"
+  scf:
+    convergence: "TightSCF"
+    max_iterations: 200
+  parallel:
+    nprocs: 8
+    memory: 8000
+
+high_precision:         # L3 high-level single points
+  program: "orca"
+  functional: "wB97M-V"
+  basis: "def2-TZVP"
+  aux_basis: "def2/JK"
+  acceleration: "RIJCOSX"
+  grid: "defgrid3"
+  scf:
+    convergence: "TightSCF"
+  parallel:
+    nprocs: 16
+    memory: 4000
+
+nnp:
+  foundation_model: "MACE-MP-0"
+  fine_tune: true
+  fine_tune_config:
+    epochs: 50
+    learning_rate: 1.0e-4
+    batch_size: 32
+  device: "cuda"
+  committee:
+    # AIMNet2 base = b973c (see docs/architecture.md for the wb97m_0 force-directionality check)
+    models: ["MACE-MP-0", "MACE-MPA-0", "AIMNet2(b973c)"]
+
+active_learning:
+  initial_train_size: 100
+  min_train_size_for_nnp: 50
+  retrain_interval: 50
+  fine_tune_epochs: 50
+  committee_size: 3
+  uq_threshold_force: 0.1    # eV/A
+  uq_threshold_energy: 0.05  # eV
+  max_dft_per_iter: 20
+  diversity_weight: 0.3
+  max_iterations: 20
+  convergence_window: 3
+  convergence_tolerance: 0.01
+
+database:
+  type: "sqlite"
+  path: "reaction_network.db"
+  checkpoint_interval: 300
+
+output:
+  report: "report.html"
+  network_json: "network.json"
+  network_graphml: "network.graphml"
+  log_level: "INFO"

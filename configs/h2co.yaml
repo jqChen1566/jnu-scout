@@ -1,0 +1,65 @@
+# JNUScout -- H2CO isomerization validation configuration
+project:
+  name: "h2co_validation"
+  description: "H2CO isomerization validation"
+  working_dir: "./runs/h2co_001"
+
+system:
+  reactants:
+    - file: "./structures/h2co.xyz"
+      charge: 0
+      multiplicity: 1
+  temperature: 500.0
+
+afir:
+  method: "sc-afir"
+  gamma: 340.0          # kJ/mol; calibrated above the estimated barrier (an AFIR run finds a
+                        # barrier only when gamma >= barrier height; the earlier 250 kJ/mol value
+                        # was below it)
+  t_reaction: 864000    # 10 days (conservative)
+  pre_screen_steps: 10
+
+dft:                    # L2 geometry optimization + frequencies
+  program: "orca"
+  functional: "r2SCAN-D4"
+  basis: "def2-SVP"
+  aux_basis: "def2/J"
+  acceleration: "RIJCOSX"  # ORCA silently downgrades RIJCOSX to Split-RI-J for pure mGGAs
+                           # (the warning is harmless); there is no "RI-J" keyword
+  grid: "defgrid3"
+  scf:
+    convergence: "TightSCF"
+  parallel:
+    nprocs: 4
+    memory: 4000
+
+high_precision:         # L3 high-level single points
+  program: "orca"
+  functional: "wB97M-V"
+  basis: "def2-TZVP"
+  aux_basis: "def2/JK"
+  acceleration: "RIJCOSX"
+  grid: "defgrid3"
+
+nnp:
+  foundation_model: "MACE-MP-0"
+  device: "cuda"
+  committee:
+    # AIMNet2 base = b973c: the wb97m_0 weights show a force-directionality defect,
+    # b973c is directionally correct (see docs/architecture.md)
+    models: ["MACE-MP-0", "MACE-MPA-0", "AIMNet2(b973c)"]
+
+active_learning:
+  initial_train_size: 50
+  retrain_interval: 25
+  max_dft_per_iter: 10
+  uq_threshold_force: 0.1
+
+database:
+  type: "sqlite"
+  path: "h2co_validation.db"
+  checkpoint_interval: 120
+
+output:
+  report: "h2co_report.html"
+  log_level: "DEBUG"
