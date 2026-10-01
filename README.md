@@ -19,8 +19,7 @@ A committee of models from different architecture families measures its own
 disagreement on every geometry; any prediction beyond a calibrated
 uncertainty threshold is handed back to higher-level quantum chemistry
 (ORCA).  The exploration itself, the models and the reference calculations
-all run on your own machine or cluster -- nothing is uploaded, and the
-framework never hides an uncertain answer behind an averaged one.
+all run on your own machine or cluster.
 
 ## Functionality
 
