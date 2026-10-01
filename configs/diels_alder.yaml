@@ -59,7 +59,7 @@ nnp:
   device: "cuda"
   committee:
     # AIMNet2 base = b973c (see docs/architecture.md for the wb97m_0 force-directionality check)
-    models: ["MACE-MP-0", "MACE-MPA-0", "AIMNet2(b973c)"]
+    models: ["MACE-MP-0", "MACE-MPA-0", "AIMNet2-b973c"]
 
 active_learning:
   initial_train_size: 100

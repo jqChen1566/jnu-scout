@@ -47,7 +47,7 @@ nnp:
   committee:
     # AIMNet2 base = b973c: the wb97m_0 weights show a force-directionality defect,
     # b973c is directionally correct (see docs/architecture.md)
-    models: ["MACE-MP-0", "MACE-MPA-0", "AIMNet2(b973c)"]
+    models: ["MACE-MP-0", "MACE-MPA-0", "AIMNet2-b973c"]
 
 active_learning:
   initial_train_size: 50
