@@ -1,10 +1,11 @@
 """ORCA ASE calculator for JNUScout.
 
-Layer definitions (revised 2026-08-24):
-  L2: r2SCAN-D4/def2-SVP RI-J def2/J TightSCF   (pure mGGA without HF exchange;
-      RIJCOSX is automatically downgraded to Split-RI-J by ORCA, hence the
-      explicit RI-J)
-  L3: wB97M-V/def2-TZVP RIJCOSX def2/JK defgrid3 TightSCF
+Layer definitions:
+  L2: r2SCAN-D4/def2-SVP, RIJCOSX approximation with the def2/J auxiliary
+      basis, TightSCF.  r2SCAN is a pure mGGA without HF exchange, so ORCA
+      automatically downgrades RIJCOSX to Split-RI-J (a harmless warning).
+  L3: wB97M-V/def2-TZVP, RIJCOSX with an AutoAux-generated auxiliary basis,
+      defgrid3, TightSCF.
 
 L1 (xTB) is not part of this module -- xTB is a standalone program and is
 handled separately when integrating with Chemoton.
